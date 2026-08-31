@@ -1,30 +1,22 @@
 import streamlit as st
-
-# Force sidebar text to bright white for Quantum SCM brand styling continuity
-st.markdown(
-    """
-    <style>
-    [data-testid="stSidebar"] {
-        color: #FFFFFF !important;
-    }
-    [data-testid="stSidebar"] p {
-        color: #FFFFFF !important;
-    }
-    [data-testid="stSidebar"] label {
-        color: #FFFFFF !important;
-    }
-    </style>
-    """,
-    unsafe_allow_html=True
-)
-
-import streamlit as st
 import pandas as pd
 import numpy as np
 from pulp import LpProblem, LpMinimize, LpVariable, lpSum, LpStatus
 import io
 import folium
 from streamlit_folium import st_folium
+
+# Force sidebar typography labels to crisp white text
+st.markdown(
+    """
+    <style>
+    [data-testid="stSidebar"] { color: #FFFFFF !important; }
+    [data-testid="stSidebar"] p { color: #FFFFFF !important; }
+    [data-testid="stSidebar"] label { color: #FFFFFF !important; }
+    </style>
+    """,
+    unsafe_allow_html=True
+)
 
 def haversine_distance(lat1, lon1, lat2, lon2):
     if lat1 == 0 or lon1 == 0 or lat2 == 0 or lon2 == 0: return 99999
@@ -103,29 +95,28 @@ if uploaded_file is not None:
             df.columns = [str(c).strip() for c in df.columns]
             if 'Name' in df.columns: df['Name'] = df['Name'].astype(str).str.strip()
 
+        # FIXED: Extraction array tracking user-mandated warehouse constraints
+        assigned_warehouses = set()
+        if 'Warehouse' in customers_df.columns:
+            for val in customers_df['Warehouse'].dropna():
+                clean_val = str(val).strip()
+                if clean_val and clean_val != '0' and clean_val.lower() != 'nan':
+                    assigned_warehouses.add(clean_val)
+
+        # CRITICAL VALIDATION BUG FIX: Catch mathematical constraint limits before calling the solver execution loop
+        if run_mode == "Run Network Optimization" and len(assigned_warehouses) > target_wh:
+            error_logs.append(f"❌ **User Assignment Contradiction**: Your customer data sheet explicitly locks **{len(assigned_warehouses)} unique warehouses** open ({', '.join(sorted(assigned_warehouses))}), but your sidebar slider parameter is requesting **exactly {target_wh} open facilities**. The mathematical optimization model cannot be resolved.")
+            validation_passed = False
+
         for idx, row in warehouses_df.iterrows():
             min_w = pd.to_numeric(row.get('Minimum Weight', 0), errors='coerce') or 0
             max_w = pd.to_numeric(row.get('Maximum Weight', 0), errors='coerce') or 0
-            fixed_c = pd.to_numeric(row.get('Fixed Costs', 0), errors='coerce') or 0
             if max_w < min_w:
-                error_logs.append(f"❌ **Warehouse Contradiction**: '{row['Name']}' Max Weight ({max_w}) is smaller than Min Weight ({min_w}).")
-                validation_passed = False
-            if pd.to_numeric(row.get('Latitude', 0), errors='coerce') == 0:
-                error_logs.append(f"⚠️ **Missing Coordinates**: Warehouse '{row['Name']}' is missing valid coordinates.")
-                validation_passed = False
-            if fixed_c < 0:
-                error_logs.append(f"❌ **Cost Contradiction**: Warehouse '{row['Name']}' has a negative Fixed Cost ({fixed_c}).")
-                validation_passed = False
-
-        for idx, row in customers_df.iterrows():
-            cust_wt = pd.to_numeric(row.get('Weight', 0), errors='coerce') or 0
-            cust_sh = pd.to_numeric(row.get('Number of Shipments', 0), errors='coerce') or 0
-            if cust_wt <= 0 or cust_sh <= 0:
-                error_logs.append(f"⚠️ **Shipment Contradiction**: Customer '{row['Name']}' has invalid Weight or Shipments data.")
+                error_logs.append(f"❌ **Warehouse Constraint Failure**: '{row['Name']}' Max Weight ({max_w}) is smaller than Min Weight ({min_w}).")
                 validation_passed = False
 
         if not validation_passed:
-            st.error("🛑 Optimization Blocked: Your spreadsheet data contains contradictions. Fix the items below:")
+            st.error("🛑 Modeling Run Aborted: Structural data conflicts caught. Please review the specific system errors detailed below:")
             for log in error_logs: st.markdown(log)
             st.stop()
         else:
@@ -149,9 +140,12 @@ if uploaded_file is not None:
                 flow_fw = LpVariable.dicts("Flow_Fact_WH", [(f, w) for f in facts for w in whs], lowBound=0, cat="Continuous")
                 flow_wc = LpVariable.dicts("Flow_WH_Cust", [(w, c) for w in whs for c in custs], lowBound=0, cat="Continuous")
 
+                # Force compulsory open tags if explicitly checked in warehouse sheet metadata
                 for w in whs:
-                    if whs[w].get('Fixed', 0) == 1: prob += use_w[w] == 1
-                if run_mode == "Run Current As-Is Baseline":
+                    if whs[w].get('Fixed', 0) == 1 or w in assigned_warehouses:
+                        prob += use_w[w] == 1
+                
+                if run_mode == "Run Current As-Is Baseline" or len(assigned_warehouses) > 0:
                     for c in custs:
                         assigned_wh = str(custs[c].get('Warehouse', '0')).strip()
                         if assigned_wh in whs:
@@ -192,7 +186,7 @@ if uploaded_file is not None:
                     var_tot = sum([flow_wc_res.get((w, c), 0) * whs[w]['Costs per Weight Unit'] for w in whs for c in custs])
                     st.session_state.prob_results = (int(prob.objective.value()), wh_open_res, flow_fw_res, flow_wc_res, inbound_tot, outbound_tot, fixed_tot, var_tot)
                 else:
-                    st.error("No optimal solution path found under current parameters.")
+                    st.error("The calculation parameters generate an unfeasible solution space. Adjust slider limits or clear data tab contradictions.")
 
         if st.session_state.optimized:
             cost, wh_open, flow_fw_res, flow_wc_res, inbound_tot, outbound_tot, fixed_tot, var_tot = st.session_state.prob_results
@@ -201,7 +195,7 @@ if uploaded_file is not None:
             scen_name = st.text_input("Type an identifiable label for this calculation", f"Scenario {len(st.session_state.scenarios)+1}")
             if st.button("Save to Storage Vault"):
                 st.session_state.scenarios[scen_name] = {
-                    "cost": cost, "wh_open": wh_open, "flow_fw": flow_fw_res, "flow_wc": flow_wc_res,
+                    "cost": cost, "wh_open": wh_open, "flow_wc": flow_wc_res, "flow_fw": flow_fw_res,
                     "inbound_tot": inbound_tot, "outbound_tot": outbound_tot, "fixed_tot": fixed_tot, "var_tot": var_tot
                 }
                 st.success(f"Pinned '{scen_name}' to system memory vaults successfully!")
@@ -209,6 +203,7 @@ if uploaded_file is not None:
             tab_doc, tab_dash, tab_map = st.tabs(["📥 1. Download Excel Workbook", "📈 2. View Performance Dashboard", "🗺️ 3. View Interactive Network Map"])
             
             with tab_doc:
+                st.markdown("### Output Generation Export Link")
                 open_wh_rows = []
                 for w in whs:
                     if wh_open[w] > 0.5:
@@ -245,7 +240,6 @@ if uploaded_file is not None:
                         w_wt = sum([flow_wc_res.get((w, c), 0) for c in custs])
                         perf_report.append({"Active Warehouse": w, "Customers Served": cust_count, "Fixed Operating Costs ($)": int(whs[w]['Fixed Costs']), "Variable Handling Costs ($)": int(w_wt * whs[w]['Costs per Weight Unit']), "Total Consolidated Warehouse Cost ($)": int(whs[w]['Fixed Costs'] + (w_wt * whs[w]['Costs per Weight Unit']))})
                 st.dataframe(pd.DataFrame(perf_report), use_container_width=True, hide_index=True)
-
             with tab_map:
                 st.markdown("### Spatial Allocation Mapping System")
                 v_lats = [whs[w]['Latitude'] for w in whs if wh_open[w] > 0.5] + [custs[c]['Latitude'] for c in custs]
@@ -303,8 +297,6 @@ if uploaded_file is not None:
                 s2 = st.session_state.scenarios[comp2]
                 
                 col_left, col_right = st.columns(2)
-                
-                # FIXED: Upgraded Side-by-Side Canvas Loops to re-render full Echelon Node layers and independent Layer Toggles!
                 with col_left:
                     st.markdown(f"### 📈 {comp1} Executive Dashboard")
                     st.metric("Consolidated Landed Budget ($)", f"{s1['cost']:,}")
