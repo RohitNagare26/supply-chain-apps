@@ -39,7 +39,7 @@ st.title("🏭 Quantum SCM Network Optimizer")
 st.markdown("Download our master data structure template, ingest custom enterprise operational profiles, and run optimizations via CBC.")
 
 if "scenarios" not in st.session_state: st.session_state.scenarios = {}
-if "optimized" not in st.session_state: st.session_state.optimized = False
+if "optimized" not in st.session_state: st.session_state.cog_optimized = False
 if "prob_results" not in st.session_state: st.session_state.prob_results = None
 
 st.subheader("📋 1. Get the Optimization Ingest Template File")
@@ -273,24 +273,23 @@ if uploaded_file is not None:
                 v_lats = [whs[w]['Latitude'] for w in whs if wh_open[w] > 0.5] + [custs[c]['Latitude'] for c in custs]
                 v_lons = [whs[w]['Longitude'] for w in whs if wh_open[w] > 0.5] + [custs[c]['Longitude'] for c in custs]
                 
-                # RE-ENGINEERED: Shifted base tiles to public CartoDB Dark Matter Base Server (No API Key Constraints)
+                # FIXED: Set to public OpenStreetMap standard tile server to overlay on your custom platinum theme background
                 map_obj = folium.Map(
                     location=[np.mean(v_lats), np.mean(v_lons)], zoom_start=4,
-                    tiles="https://cartocdn.com{z}/{x}/{y}.png",
-                    attr='&copy; <a href="https://openstreetmap.org">OpenStreetMap</a> contributors &copy; <a href="https://carto.com">CARTO</a>'
+                    tiles="OpenStreetMap"
                 )
                 
-                fg_factories = folium.FeatureGroup(name="Factories (Green Glow)", show=True).add_to(map_obj)
-                fg_warehouses = folium.FeatureGroup(name="Open Warehouses (Gold Target)", show=True).add_to(map_obj)
+                fg_factories = folium.FeatureGroup(name="Factories (Green Icons)", show=True).add_to(map_obj)
+                fg_warehouses = folium.FeatureGroup(name="Open Warehouses (Orange Icons)", show=True).add_to(map_obj)
                 fg_customers = folium.FeatureGroup(name="Customer Deliveries", show=True).add_to(map_obj)
-                fg_inbound_lanes = folium.FeatureGroup(name="Inbound High-Volume Lines", show=True).add_to(map_obj)
-                fg_outbound_lanes = folium.FeatureGroup(name="Outbound Vector Connections", show=True).add_to(map_obj)
+                fg_inbound_lanes = folium.FeatureGroup(name="Inbound Lines", show=True).add_to(map_obj)
+                fg_outbound_lanes = folium.FeatureGroup(name="Outbound Lines", show=True).add_to(map_obj)
                 
                 for (f, w), val in flow_fw_res.items():
                     folium.PolyLine([[facts[f]['Latitude'], facts[f]['Longitude']], [whs[w]['Latitude'], whs[w]['Longitude']]], color="#00A3FF", weight=line_thickness + 1, opacity=0.8).add_to(fg_inbound_lanes)
                 for (w, c), val in flow_wc_res.items():
-                    folium.PolyLine([[whs[w]['Latitude'], whs[w]['Longitude']], [custs[c]['Latitude'], custs[c]['Longitude']]], color="#FFFFFF", weight=1.0, opacity=0.35).add_to(fg_outbound_lanes)
-                    folium.CircleMarker([custs[c]['Latitude'], custs[c]['Longitude']], radius=3.5, color="#00A3FF", fill=True, fill_color="#00A3FF", fill_opacity=0.7, popup=c).add_to(fg_customers)
+                    folium.PolyLine([[whs[w]['Latitude'], whs[w]['Longitude']], [custs[c]['Latitude'], custs[c]['Longitude']]], color="#00A3FF", weight=1.0, opacity=0.5).add_to(fg_outbound_lanes)
+                    folium.CircleMarker([custs[c]['Latitude'], custs[c]['Longitude']], radius=3.5, color="#1E2229", fill=True, fill_color="#1E2229", fill_opacity=0.7, popup=c).add_to(fg_customers)
                 for f in facts: 
                     folium.Marker([facts[f]['Latitude'], facts[f]['Longitude']], icon=folium.Icon(color="green", icon="industry", prefix="fa"), popup=f).add_to(fg_factories)
                 for w in whs:
@@ -330,7 +329,7 @@ if uploaded_file is not None:
                 with col_left:
                     st.markdown(f"### 📈 {comp1} Executive Dashboard")
                     st.metric("Consolidated Landed Budget ($)", f"{s1['cost']:,}")
-                    m1 = folium.Map(location=[39.82, -98.57], zoom_start=4, tiles="https://cartocdn.com{z}/{x}/{y}.png", attr="CARTO")
+                    m1 = folium.Map(location=[39.82, -98.57], zoom_start=4, tiles="OpenStreetMap")
                     for w in whs:
                         if s1['wh_open'][w] > 0.5: folium.Marker([whs[w]['Latitude'], whs[w]['Longitude']], icon=folium.Icon(color="orange")).add_to(m1)
                     for (w, c), val in s1['flow_wc'].items(): folium.PolyLine([[whs[w]['Latitude'], whs[w]['Longitude']], [custs[c]['Latitude'], custs[c]['Longitude']]], color="#00A3FF", weight=1).add_to(m1)
@@ -338,7 +337,7 @@ if uploaded_file is not None:
                 with col_right:
                     st.markdown(f"### 📈 {comp2} Executive Dashboard")
                     st.metric("Consolidated Landed Budget ($)", f"{s2['cost']:,}", delta=int(s2['cost'] - s1['cost']), delta_color="inverse")
-                    m2 = folium.Map(location=[39.82, -98.57], zoom_start=4, tiles="https://cartocdn.com{z}/{x}/{y}.png", attr="CARTO")
+                    m2 = folium.Map(location=[39.82, -98.57], zoom_start=4, tiles="OpenStreetMap")
                     for w in whs:
                         if s2['wh_open'][w] > 0.5: folium.Marker([whs[w]['Latitude'], whs[w]['Longitude']], icon=folium.Icon(color="green")).add_to(m2)
                     for (w, c), val in s2['flow_wc'].items(): folium.PolyLine([[whs[w]['Latitude'], whs[w]['Longitude']], [custs[c]['Latitude'], custs[c]['Longitude']]], color="#00A3FF", weight=1).add_to(m2)
