@@ -93,8 +93,8 @@ if uploaded_file is not None:
             
             st.success("Optimization Run Complete!")
             
-            # Split Data Display Layout Tables
-            col1, col2 = st.columns()
+            # Split Data Display Layout Tables (FIXED: Explicitly defined columns)
+            col1, col2 = st.columns(2)
             with col1:
                 st.markdown("### CENTERS (Optimal Hub Locations)")
                 st.dataframe(df_centers, use_container_width=True, hide_index=True)
