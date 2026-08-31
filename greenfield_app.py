@@ -103,10 +103,11 @@ if uploaded_file is not None:
             st.subheader("🗺️ Network Allocation Map")
             c_lat_avg = df_input['Latitude'].mean()
             c_lon_avg = df_input['Longitude'].mean()
+            
+            # FIXED: Restored stable international OpenStreetMap tile server layout
             m = folium.Map(
                 location=[c_lat_avg, c_lon_avg], zoom_start=5, control_scale=True,
-                tiles="https://{s}://{z}/{x}/{y}{r}.png",
-                attr='&copy; OpenStreetMap &copy; CARTO'
+                tiles="OpenStreetMap"
             )
             fg_locations = folium.FeatureGroup(name="Locations (Customers)", show=True).add_to(m)
             fg_relations = folium.FeatureGroup(name="Relations (Flow Lines)", show=True).add_to(m)
