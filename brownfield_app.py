@@ -1,4 +1,24 @@
 import streamlit as st
+
+# Force sidebar text to bright white for Quantum SCM brand styling continuity
+st.markdown(
+    """
+    <style>
+    [data-testid="stSidebar"] {
+        color: #FFFFFF !important;
+    }
+    [data-testid="stSidebar"] p {
+        color: #FFFFFF !important;
+    }
+    [data-testid="stSidebar"] label {
+        color: #FFFFFF !important;
+    }
+    </style>
+    """,
+    unsafe_allow_html=True
+)
+
+import streamlit as st
 import pandas as pd
 import numpy as np
 from pulp import LpProblem, LpMinimize, LpVariable, lpSum, LpStatus
