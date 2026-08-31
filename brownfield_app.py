@@ -95,18 +95,33 @@ if uploaded_file is not None:
             df.columns = [str(c).strip() for c in df.columns]
             if 'Name' in df.columns: df['Name'] = df['Name'].astype(str).str.strip()
 
-        # FIXED: Extraction array tracking user-mandated warehouse constraints
-        assigned_warehouses = set()
+        # FIXED: Extract warehouses marked as Fixed (Fixed == 1) in the master list
+        fixed_master_warehouses = set()
+        if 'Fixed' in warehouses_df.columns:
+            for idx, row in warehouses_df.iterrows():
+                if pd.to_numeric(row['Fixed'], errors='coerce') == 1:
+                    fixed_master_warehouses.add(str(row['Name']).strip())
+
+        # FIXED: Extract unique warehouses locked inside the customer rows
+        assigned_customer_warehouses = set()
         if 'Warehouse' in customers_df.columns:
             for val in customers_df['Warehouse'].dropna():
                 clean_val = str(val).strip()
                 if clean_val and clean_val != '0' and clean_val.lower() != 'nan':
-                    assigned_warehouses.add(clean_val)
+                    assigned_customer_warehouses.add(clean_val)
 
-        # CRITICAL VALIDATION BUG FIX: Catch mathematical constraint limits before calling the solver execution loop
-        if run_mode == "Run Network Optimization" and len(assigned_warehouses) > target_wh:
-            error_logs.append(f"❌ **User Assignment Contradiction**: Your customer data sheet explicitly locks **{len(assigned_warehouses)} unique warehouses** open ({', '.join(sorted(assigned_warehouses))}), but your sidebar slider parameter is requesting **exactly {target_wh} open facilities**. The mathematical optimization model cannot be resolved.")
+        # FIXED: Combine both constraint layers into a single master set of mandatory open locations
+        mandatory_open_warehouses = fixed_master_warehouses.union(assigned_customer_warehouses)
+
+        # CRITICAL CONTRADICTION BUG FIX: Check combined constraint limits before executing optimization calculations
+        if run_mode == "Run Network Optimization" and len(mandatory_open_warehouses) > target_wh:
             validation_passed = False
+            error_logs.append(
+                f"❌ **Integrated Baseline Contradiction**: Your network requires a minimum of **{len(mandatory_open_warehouses)} unique warehouses** to stay open "
+                f"({', '.join(sorted(mandatory_open_warehouses))}). This includes **{len(fixed_master_warehouses)} master fixed warehouses** from your facilities list "
+                f"and **{len(assigned_customer_warehouses)} unique customer-locked warehouses**. Your sidebar setting slider is currently set to **exactly {target_wh} open facilities**, "
+                f"which creates an impossible mathematical constraint. Increase the slider setting or clear fixed parameters in your Excel sheet."
+            )
 
         for idx, row in warehouses_df.iterrows():
             min_w = pd.to_numeric(row.get('Minimum Weight', 0), errors='coerce') or 0
@@ -120,7 +135,7 @@ if uploaded_file is not None:
             for log in error_logs: st.markdown(log)
             st.stop()
         else:
-            st.sidebar.success("✅ Data Integrity Verified!")
+            st.sidebar.success("✅ Data Layout & Constraints Verified!")
 
         for df in [factories_df, warehouses_df, customers_df]:
             for col in ['Latitude', 'Longitude', 'Weight', 'Volume', 'Fixed Costs', 'Maximum Weight', 'Number of Shipments', 'Costs per Weight Unit']:
@@ -140,12 +155,12 @@ if uploaded_file is not None:
                 flow_fw = LpVariable.dicts("Flow_Fact_WH", [(f, w) for f in facts for w in whs], lowBound=0, cat="Continuous")
                 flow_wc = LpVariable.dicts("Flow_WH_Cust", [(w, c) for w in whs for c in custs], lowBound=0, cat="Continuous")
 
-                # Force compulsory open tags if explicitly checked in warehouse sheet metadata
+                # Force compulsory open tags if identified in the mandatory master verification layer
                 for w in whs:
-                    if whs[w].get('Fixed', 0) == 1 or w in assigned_warehouses:
+                    if w in mandatory_open_warehouses:
                         prob += use_w[w] == 1
                 
-                if run_mode == "Run Current As-Is Baseline" or len(assigned_warehouses) > 0:
+                if run_mode == "Run Current As-Is Baseline" or len(assigned_customer_warehouses) > 0:
                     for c in custs:
                         assigned_wh = str(custs[c].get('Warehouse', '0')).strip()
                         if assigned_wh in whs:
@@ -164,7 +179,10 @@ if uploaded_file is not None:
                     prob += lpSum([flow_wc[w, c] for c in custs]) <= whs[w]['Maximum Weight'] * use_w[w]
                     prob += lpSum([flow_wc[w, c] for c in custs]) >= whs[w]['Minimum Weight'] * use_w[w]
 
-                if run_mode == "Run Network Optimization":
+                # If baseline calculation mode is engaged, let the solver use exactly the mandatory warehouse count dynamically
+                if run_mode == "Run Current As-Is Baseline":
+                    prob += lpSum([use_w[w] for w in whs]) == len(mandatory_open_warehouses)
+                elif run_mode == "Run Network Optimization":
                     prob += lpSum([use_w[w] for w in whs]) == target_wh
 
                 inbound_cost_expr = lpSum([flow_fw[f, w] * get_degressive_rate(dist_fw[f][w], facts[f].get('Truck Costs per km/mi [first km/mi]', 1), facts[f].get('Truck Costs per km/mi [1000 km/mi]', 1)) for f in facts for w in whs])
@@ -186,7 +204,7 @@ if uploaded_file is not None:
                     var_tot = sum([flow_wc_res.get((w, c), 0) * whs[w]['Costs per Weight Unit'] for w in whs for c in custs])
                     st.session_state.prob_results = (int(prob.objective.value()), wh_open_res, flow_fw_res, flow_wc_res, inbound_tot, outbound_tot, fixed_tot, var_tot)
                 else:
-                    st.error("The calculation parameters generate an unfeasible solution space. Adjust slider limits or clear data tab contradictions.")
+                    st.error("The current baseline constraints create an unfeasible solution space. Increase slider target limits or clear conflicting allocations.")
 
         if st.session_state.optimized:
             cost, wh_open, flow_fw_res, flow_wc_res, inbound_tot, outbound_tot, fixed_tot, var_tot = st.session_state.prob_results
@@ -240,6 +258,7 @@ if uploaded_file is not None:
                         w_wt = sum([flow_wc_res.get((w, c), 0) for c in custs])
                         perf_report.append({"Active Warehouse": w, "Customers Served": cust_count, "Fixed Operating Costs ($)": int(whs[w]['Fixed Costs']), "Variable Handling Costs ($)": int(w_wt * whs[w]['Costs per Weight Unit']), "Total Consolidated Warehouse Cost ($)": int(whs[w]['Fixed Costs'] + (w_wt * whs[w]['Costs per Weight Unit']))})
                 st.dataframe(pd.DataFrame(perf_report), use_container_width=True, hide_index=True)
+
             with tab_map:
                 st.markdown("### Spatial Allocation Mapping System")
                 v_lats = [whs[w]['Latitude'] for w in whs if wh_open[w] > 0.5] + [custs[c]['Latitude'] for c in custs]
