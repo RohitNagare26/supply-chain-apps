@@ -1,7 +1,7 @@
 import streamlit as st
 import pandas as pd
 import numpy as np
-from pulp import LpProblem, LpMinimize, LpVariable, lpSum, LpStatus, HiGHS_CMD
+from pulp import LpProblem, LpMinimize, LpVariable, lpSum, LpStatus
 import io
 import folium
 from streamlit_folium import st_folium
@@ -23,7 +23,7 @@ def get_degressive_rate(dist, cost_1, cost_1000):
 
 st.set_page_config(layout="wide")
 st.title("🏭 Brownfield Network Infrastructure Optimizer")
-st.markdown("Upload your supply chain data sheet to execute capacity-constrained optimizations via HiGHS.")
+st.markdown("Upload your supply chain data sheet to execute capacity-constrained optimizations natively.")
 
 st.sidebar.header("🔧 Optimization Settings")
 run_mode = st.sidebar.selectbox("Workflow Operational Mode", ["Run Network Optimization", "Run Current As-Is Baseline"])
@@ -37,7 +37,7 @@ uploaded_file = st.file_uploader("Upload your Supply Chain Excel Workbook (Singl
 if uploaded_file is not None:
     try:
         xl = pd.ExcelFile(uploaded_file)
-        if len(xl.sheet_names) == 1 or "Input" in xl.sheet_names[0] or "Design" in xl.sheet_names[0]:
+        if len(xl.sheet_names) == 1 or "Input" in xl.sheet_names or "Design" in xl.sheet_names:
             raw_df = pd.read_excel(uploaded_file, header=None)
             header_idx = None
             for idx, r in raw_df.iterrows():
@@ -127,7 +127,9 @@ if uploaded_file is not None:
         wh_variable_expr = lpSum([flow_wc[w, c] * whs[w]['Costs per Weight Unit'] for w in whs for c in custs])
 
         prob += inbound_cost_expr + outbound_cost_expr + wh_fixed_expr + wh_variable_expr
-        prob.solve(HiGHS_CMD(msg=False))
+        
+        # FIXED: Swapped out explicit external HiGHS CMD execution for PuLP's stable bundled native solver engine
+        prob.solve()
 
         if LpStatus[prob.status] == "Optimal":
             st.success("Optimization Run Complete!")
@@ -169,7 +171,7 @@ if uploaded_file is not None:
             folium.LayerControl(position='topleft', collapsed=True).add_to(m)
             st_folium(m, width="100%", height=650, returned_objects=[])
         else:
-            st.error("HiGHS Solver engine was unable to compute an optimal distribution pattern.")
+            st.error("The solver engine was unable to compute an optimal distribution pattern.")
     except Exception as e:
         st.error(f"Error parsing workbook layout matrix: {str(e)}")
 else:
