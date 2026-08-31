@@ -273,10 +273,11 @@ if uploaded_file is not None:
                 v_lats = [whs[w]['Latitude'] for w in whs if wh_open[w] > 0.5] + [custs[c]['Latitude'] for c in custs]
                 v_lons = [whs[w]['Longitude'] for w in whs if wh_open[w] > 0.5] + [custs[c]['Longitude'] for c in custs]
                 
+                # RE-ENGINEERED: Shifted base tiles to public CartoDB Dark Matter Base Server (No API Key Constraints)
                 map_obj = folium.Map(
                     location=[np.mean(v_lats), np.mean(v_lons)], zoom_start=4,
-                    tiles="https://stadiamaps.com{z}/{x}/{y}{r}.png",
-                    attr='&copy; <a href="https://stadiamaps.com">Stadia Maps</a> &copy; OpenMapTiles &copy; OpenStreetMap'
+                    tiles="https://cartocdn.com{z}/{x}/{y}.png",
+                    attr='&copy; <a href="https://openstreetmap.org">OpenStreetMap</a> contributors &copy; <a href="https://carto.com">CARTO</a>'
                 )
                 
                 fg_factories = folium.FeatureGroup(name="Factories (Green Glow)", show=True).add_to(map_obj)
@@ -290,9 +291,11 @@ if uploaded_file is not None:
                 for (w, c), val in flow_wc_res.items():
                     folium.PolyLine([[whs[w]['Latitude'], whs[w]['Longitude']], [custs[c]['Latitude'], custs[c]['Longitude']]], color="#FFFFFF", weight=1.0, opacity=0.35).add_to(fg_outbound_lanes)
                     folium.CircleMarker([custs[c]['Latitude'], custs[c]['Longitude']], radius=3.5, color="#00A3FF", fill=True, fill_color="#00A3FF", fill_opacity=0.7, popup=c).add_to(fg_customers)
-                for f in facts: folium.Marker([facts[f]['Latitude'], facts[f]['Longitude']], icon=folium.Icon(color="green", icon="industry", prefix="fa"), popup=f).add_to(fg_factories)
+                for f in facts: 
+                    folium.Marker([facts[f]['Latitude'], facts[f]['Longitude']], icon=folium.Icon(color="green", icon="industry", prefix="fa"), popup=f).add_to(fg_factories)
                 for w in whs:
-                    if wh_open[w] > 0.5: folium.Marker([whs[w]['Latitude'], whs[w]['Longitude']], icon=folium.Icon(color="orange", icon="warehouse", prefix="fa"), popup=w).add_to(fg_warehouses)
+                    if wh_open[w] > 0.5: 
+                        folium.Marker([whs[w]['Latitude'], whs[w]['Longitude']], icon=folium.Icon(color="orange", icon="warehouse", prefix="fa"), popup=w).add_to(fg_warehouses)
                     
                 folium.LayerControl(position='topleft', collapsed=True).add_to(map_obj)
                 st_folium(map_obj, width="100%", height=600, returned_objects=[], key="main_map")
@@ -327,7 +330,7 @@ if uploaded_file is not None:
                 with col_left:
                     st.markdown(f"### 📈 {comp1} Executive Dashboard")
                     st.metric("Consolidated Landed Budget ($)", f"{s1['cost']:,}")
-                    m1 = folium.Map(location=[39.82, -98.57], zoom_start=4, tiles="https://stadiamaps.com{z}/{x}/{y}{r}.png", attr="Stadia")
+                    m1 = folium.Map(location=[39.82, -98.57], zoom_start=4, tiles="https://cartocdn.com{z}/{x}/{y}.png", attr="CARTO")
                     for w in whs:
                         if s1['wh_open'][w] > 0.5: folium.Marker([whs[w]['Latitude'], whs[w]['Longitude']], icon=folium.Icon(color="orange")).add_to(m1)
                     for (w, c), val in s1['flow_wc'].items(): folium.PolyLine([[whs[w]['Latitude'], whs[w]['Longitude']], [custs[c]['Latitude'], custs[c]['Longitude']]], color="#00A3FF", weight=1).add_to(m1)
@@ -335,7 +338,7 @@ if uploaded_file is not None:
                 with col_right:
                     st.markdown(f"### 📈 {comp2} Executive Dashboard")
                     st.metric("Consolidated Landed Budget ($)", f"{s2['cost']:,}", delta=int(s2['cost'] - s1['cost']), delta_color="inverse")
-                    m2 = folium.Map(location=[39.82, -98.57], zoom_start=4, tiles="https://stadiamaps.com{z}/{x}/{y}{r}.png", attr="Stadia")
+                    m2 = folium.Map(location=[39.82, -98.57], zoom_start=4, tiles="https://cartocdn.com{z}/{x}/{y}.png", attr="CARTO")
                     for w in whs:
                         if s2['wh_open'][w] > 0.5: folium.Marker([whs[w]['Latitude'], whs[w]['Longitude']], icon=folium.Icon(color="green")).add_to(m2)
                     for (w, c), val in s2['flow_wc'].items(): folium.PolyLine([[whs[w]['Latitude'], whs[w]['Longitude']], [custs[c]['Latitude'], custs[c]['Longitude']]], color="#00A3FF", weight=1).add_to(m2)
