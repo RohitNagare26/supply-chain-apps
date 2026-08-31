@@ -6,7 +6,7 @@ import io
 import folium
 from streamlit_folium import st_folium
 
-# 1. Define Distance Function
+# 1. Define Distance Function (Fixed for NumPy arrays)
 def haversine_distance(lat1, lon1, lat2, lon2):
     R = 6371.0
     lat1, lon1, lat2, lon2 = map(np.radians, [lat1, lon1, lat2, lon2])
@@ -54,8 +54,8 @@ if uploaded_file is not None:
                 cluster_weight = df_input[df_input['Center_ID'] == i]['Weight'].sum()
                 centers_data.append({
                     "Center Name": f"Center {i+1}",
-                    "Center Latitude": center,
-                    "Center Longitude": center,
+                    "Center Latitude": float(center[0]),
+                    "Center Longitude": float(center[1]),
                     "Weight": int(cluster_weight)
                 })
             df_centers = pd.DataFrame(centers_data)
@@ -68,7 +68,10 @@ if uploaded_file is not None:
                 c_lon = df_centers.loc[c_idx, 'Center Longitude']
                 c_name = df_centers.loc[c_idx, 'Center Name']
                 
-                distance = haversine_distance(row['Latitude'], row['Longitude'], c_lat, c_lon)
+                # Compute raw distance scalar
+                distance_val = haversine_distance(row['Latitude'], row['Longitude'], c_lat, c_lon)
+                # Convert the NumPy data type safely to a standard rounded float point
+                final_distance = round(float(np.ravel(distance_val)[0]), 2)
                 
                 assigned_data.append({
                     "Name": row['Name'],
@@ -83,7 +86,7 @@ if uploaded_file is not None:
                     "Center Name": c_name,
                     "Center Latitude": c_lat,
                     "Center Longitude": c_lon,
-                    "Distance": round(distance, 2),
+                    "Distance": final_distance,
                     "Color": cluster_colors[c_idx % len(cluster_colors)]
                 })
             df_assigned = pd.DataFrame(assigned_data)
