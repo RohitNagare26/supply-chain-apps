@@ -1,7 +1,11 @@
 [theme]
-# Quantum SCM Visual Identity Theme Configuration
+# Quantum SCM Premium Corporate Identity Configuration
 primaryColor = "#00A3FF"
 backgroundColor = "#E5E2DD"
 secondaryBackgroundColor = "#1E2229"
 textColor = "#1E2229"
 font = "sans serif"
+
+# Custom CSS override hook to keep slate sidebar typography clean and white
+[browser]
+gatherUsageStats = false
