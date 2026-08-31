@@ -104,10 +104,11 @@ if uploaded_file is not None:
             c_lat_avg = df_input['Latitude'].mean()
             c_lon_avg = df_input['Longitude'].mean()
             
-            # FIXED: Restored stable international OpenStreetMap tile server layout
+            # FIXED: Swapped map tiles to Esri World Street Map to force English labels globally
             m = folium.Map(
                 location=[c_lat_avg, c_lon_avg], zoom_start=5, control_scale=True,
-                tiles="OpenStreetMap"
+                tiles="https://arcgisonline.com{z}/{y}/{x}",
+                attr="Tiles &copy; Esri &mdash; Source: Esri, DeLorme, NAVTEQ, USGS, Intermap, iPC, NRCAN, Esri Japan, METI, Esri China (Hong Kong), Esri (Thailand), TomTom, 2012"
             )
             fg_locations = folium.FeatureGroup(name="Locations (Customers)", show=True).add_to(m)
             fg_relations = folium.FeatureGroup(name="Relations (Flow Lines)", show=True).add_to(m)
