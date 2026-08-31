@@ -172,7 +172,7 @@ if uploaded_file is not None:
                     var_tot = sum([flow_wc_res.get((w, c), 0) * whs[w]['Costs per Weight Unit'] for w in whs for c in custs])
                     st.session_state.prob_results = (int(prob.objective.value()), wh_open_res, flow_fw_res, flow_wc_res, inbound_tot, outbound_tot, fixed_tot, var_tot)
                 else:
-                    st.error("No optimal solution path feasible under current warehouse target configuration constraints.")
+                    st.error("No optimal solution path found under current parameters.")
 
         if st.session_state.optimized:
             cost, wh_open, flow_fw_res, flow_wc_res, inbound_tot, outbound_tot, fixed_tot, var_tot = st.session_state.prob_results
@@ -181,7 +181,7 @@ if uploaded_file is not None:
             scen_name = st.text_input("Type an identifiable label for this calculation", f"Scenario {len(st.session_state.scenarios)+1}")
             if st.button("Save to Storage Vault"):
                 st.session_state.scenarios[scen_name] = {
-                    "cost": cost, "wh_open": wh_open, "flow_wc": flow_wc_res,
+                    "cost": cost, "wh_open": wh_open, "flow_fw": flow_fw_res, "flow_wc": flow_wc_res,
                     "inbound_tot": inbound_tot, "outbound_tot": outbound_tot, "fixed_tot": fixed_tot, "var_tot": var_tot
                 }
                 st.success(f"Pinned '{scen_name}' to system memory vaults successfully!")
@@ -189,7 +189,6 @@ if uploaded_file is not None:
             tab_doc, tab_dash, tab_map = st.tabs(["📥 1. Download Excel Workbook", "📈 2. View Performance Dashboard", "🗺️ 3. View Interactive Network Map"])
             
             with tab_doc:
-                st.markdown("### Output Generation Export Link")
                 open_wh_rows = []
                 for w in whs:
                     if wh_open[w] > 0.5:
@@ -265,7 +264,6 @@ if uploaded_file is not None:
                 v3.metric("FIXED LEASES", f"${int(sc['fixed_tot'])}")
                 v4.metric("VARIABLE HANDLING", f"${int(sc['var_tot'])}")
 
-        # FIXED/MODIFIED: Added a clean sidebar toggle checkbox to activate or collapse the Comparison Room layout dynamically
         if len(st.session_state.scenarios) >= 2:
             st.sidebar.markdown("---")
             st.sidebar.header("⚖️ Comparison Room Settings")
@@ -285,6 +283,8 @@ if uploaded_file is not None:
                 s2 = st.session_state.scenarios[comp2]
                 
                 col_left, col_right = st.columns(2)
+                
+                # FIXED: Upgraded Side-by-Side Canvas Loops to re-render full Echelon Node layers and independent Layer Toggles!
                 with col_left:
                     st.markdown(f"### 📈 {comp1} Executive Dashboard")
                     st.metric("Consolidated Landed Budget ($)", f"{s1['cost']:,}")
@@ -292,10 +292,23 @@ if uploaded_file is not None:
                     
                     st.markdown(f"### 🗺️ {comp1} Regional Node Map")
                     m1 = folium.Map(location=[39.8283, -98.5795], zoom_start=4)
-                    for w in whs:
-                        if s1['wh_open'][w] > 0.5: folium.Marker([whs[w]['Latitude'], whs[w]['Longitude']], icon=folium.Icon(color="red", icon="warehouse", prefix="fa")).add_to(m1)
+                    folium.TileLayer("https://{s}://{z}/{x}/{y}{r}.png", attr="&copy; CARTO", name="Labels", overlay=True, control=False).add_to(m1)
+                    
+                    f1_f = folium.FeatureGroup(name="Factories (Red)", show=True).add_to(m1)
+                    f1_w = folium.FeatureGroup(name="Open Warehouses (Orange)", show=True).add_to(m1)
+                    f1_c = folium.FeatureGroup(name="Customers (Blue)", show=True).add_to(m1)
+                    f1_li = folium.FeatureGroup(name="Inbound Lines (Red)", show=True).add_to(m1)
+                    f1_lo = folium.FeatureGroup(name="Outbound Lines (Blue)", show=True).add_to(m1)
+                    
+                    for (f, w), val in s1['flow_fw'].items(): folium.PolyLine([[facts[f]['Latitude'], facts[f]['Longitude']], [whs[w]['Latitude'], whs[w]['Longitude']]], color="red", weight=3).add_to(f1_li)
                     for (w, c), val in s1['flow_wc'].items():
-                        folium.PolyLine([[whs[w]['Latitude'], whs[w]['Longitude']], [custs[c]['Latitude'], custs[c]['Longitude']]], color="red", weight=2).add_to(m1)
+                        folium.PolyLine([[whs[w]['Latitude'], whs[w]['Longitude']], [custs[c]['Latitude'], custs[c]['Longitude']]], color="blue", weight=2, opacity=0.4).add_to(f1_lo)
+                        folium.CircleMarker([custs[c]['Latitude'], custs[c]['Longitude']], radius=4, color="blue", fill=True).add_to(f1_c)
+                    for f in facts: folium.Marker([facts[f]['Latitude'], facts[f]['Longitude']], icon=folium.Icon(color="red", icon="industry", prefix="fa")).add_to(f1_f)
+                    for w in whs:
+                        if s1['wh_open'][w] > 0.5: folium.Marker([whs[w]['Latitude'], whs[w]['Longitude']], icon=folium.Icon(color="orange", icon="warehouse", prefix="fa")).add_to(f1_w)
+                    
+                    folium.LayerControl(position='topleft', collapsed=True).add_to(m1)
                     st_folium(m1, width="100%", height=400, key="map_scen_left", returned_objects=[])
                     
                 with col_right:
@@ -305,10 +318,23 @@ if uploaded_file is not None:
                     
                     st.markdown(f"### 🗺️ {comp2} Regional Node Map")
                     m2 = folium.Map(location=[39.8283, -98.5795], zoom_start=4)
-                    for w in whs:
-                        if s2['wh_open'][w] > 0.5: folium.Marker([whs[w]['Latitude'], whs[w]['Longitude']], icon=folium.Icon(color="green", icon="warehouse", prefix="fa")).add_to(m2)
+                    folium.TileLayer("https://{s}://{z}/{x}/{y}{r}.png", attr="&copy; CARTO", name="Labels", overlay=True, control=False).add_to(m2)
+                    
+                    f2_f = folium.FeatureGroup(name="Factories (Red)", show=True).add_to(m2)
+                    f2_w = folium.FeatureGroup(name="Open Warehouses (Orange)", show=True).add_to(m2)
+                    f2_c = folium.FeatureGroup(name="Customers (Blue)", show=True).add_to(m2)
+                    f2_li = folium.FeatureGroup(name="Inbound Lines (Red)", show=True).add_to(m2)
+                    f2_lo = folium.FeatureGroup(name="Outbound Lines (Blue)", show=True).add_to(m2)
+                    
+                    for (f, w), val in s2['flow_fw'].items(): folium.PolyLine([[facts[f]['Latitude'], facts[f]['Longitude']], [whs[w]['Latitude'], whs[w]['Longitude']]], color="red", weight=3).add_to(f2_li)
                     for (w, c), val in s2['flow_wc'].items():
-                        folium.PolyLine([[whs[w]['Latitude'], whs[w]['Longitude']], [custs[c]['Latitude'], custs[c]['Longitude']]], color="green", weight=2).add_to(m2)
+                        folium.PolyLine([[whs[w]['Latitude'], whs[w]['Longitude']], [custs[c]['Latitude'], custs[c]['Longitude']]], color="blue", weight=2, opacity=0.4).add_to(f2_lo)
+                        folium.CircleMarker([custs[c]['Latitude'], custs[c]['Longitude']], radius=4, color="blue", fill=True).add_to(f2_c)
+                    for f in facts: folium.Marker([facts[f]['Latitude'], facts[f]['Longitude']], icon=folium.Icon(color="red", icon="industry", prefix="fa")).add_to(f2_f)
+                    for w in whs:
+                        if s2['wh_open'][w] > 0.5: folium.Marker([whs[w]['Latitude'], whs[w]['Longitude']], icon=folium.Icon(color="orange", icon="warehouse", prefix="fa")).add_to(f2_w)
+                    
+                    folium.LayerControl(position='topleft', collapsed=True).add_to(m2)
                     st_folium(m2, width="100%", height=400, key="map_scen_right", returned_objects=[])
 
     except Exception as e:
