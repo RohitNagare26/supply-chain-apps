@@ -7,6 +7,7 @@ import folium
 from streamlit_folium import st_folium
 
 def haversine_distance(lat1, lon1, lat2, lon2):
+    if lat1 == 0 or lon1 == 0 or lat2 == 0 or lon2 == 0: return 99999
     R = 6371.0 # km
     lat1, lon1, lat2, lon2 = map(np.radians, [lat1, lon1, lat2, lon2])
     dlat = lat2 - lat1
@@ -82,6 +83,10 @@ if uploaded_file is not None:
             for col in ['Latitude', 'Longitude', 'Weight', 'Volume', 'Fixed Costs', 'Maximum Weight']:
                 if col in df.columns:
                     df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0)
+                    
+        factories_df = factories_df[factories_df['Latitude'] != 0].copy()
+        warehouses_df = warehouses_df[warehouses_df['Latitude'] != 0].copy()
+        customers_df = customers_df[customers_df['Latitude'] != 0].copy()
 
         facts = factories_df.set_index('Name').to_dict('index')
         whs = warehouses_df.set_index('Name').to_dict('index')
@@ -89,15 +94,13 @@ if uploaded_file is not None:
 
         dist_fw = {f: {w: haversine_distance(facts[f]['Latitude'], facts[f]['Longitude'], whs[w]['Latitude'], whs[w]['Longitude']) for w in whs} for f in facts}
         dist_wc = {w: {c: haversine_distance(whs[w]['Latitude'], whs[w]['Longitude'], custs[c]['Latitude'], custs[c]['Longitude']) for c in custs} for w in whs}
-
         prob = LpProblem("Brownfield_Optimization", LpMinimize)
         use_w = LpVariable.dicts("Open_WH", whs.keys(), cat="Binary")
         flow_fw = LpVariable.dicts("Flow_Fact_WH", [(f, w) for f in facts for w in whs], lowBound=0, cat="Continuous")
         flow_wc = LpVariable.dicts("Flow_WH_Cust", [(w, c) for w in whs for c in custs], lowBound=0, cat="Continuous")
 
         for w in whs:
-            if whs[w].get('Fixed', 0) == 1:
-                prob += use_w[w] == 1
+            if whs[w].get('Fixed', 0) == 1: prob += use_w[w] == 1
         
         if run_mode == "Run Current As-Is Baseline":
             for c in custs:
@@ -111,8 +114,7 @@ if uploaded_file is not None:
                 prob += lpSum([flow_wc[w, c] for w in whs]) == custs[c]['Weight'] * custs[c]['Number of Shipments']
             for w in whs:
                 max_d = custs[c].get('Maximum Warehouse Distance', 99999)
-                if max_d > 0 and dist_wc[w][c] > max_d:
-                    prob += flow_wc[w, c] == 0
+                if max_d > 0 and dist_wc[w][c] > max_d: prob += flow_wc[w, c] == 0
 
         for w in whs:
             prob += lpSum([flow_fw[f, w] for f in facts]) == lpSum([flow_wc[w, c] for c in custs])
@@ -127,8 +129,6 @@ if uploaded_file is not None:
         wh_variable_expr = lpSum([flow_wc[w, c] * whs[w]['Costs per Weight Unit'] for w in whs for c in custs])
 
         prob += inbound_cost_expr + outbound_cost_expr + wh_fixed_expr + wh_variable_expr
-        
-        # FIXED: Swapped out explicit external HiGHS CMD execution for PuLP's stable bundled native solver engine
         prob.solve()
 
         if LpStatus[prob.status] == "Optimal":
@@ -151,22 +151,29 @@ if uploaded_file is not None:
             st.dataframe(df_wh_out, use_container_width=True, hide_index=True)
 
             st.subheader("🗺️ Network Optimization Flow Map")
-            all_lats = [whs[w]['Latitude'] for w in whs if use_w[w].varValue > 0.5] + [custs[c]['Latitude'] for c in custs]
-            all_lons = [whs[w]['Longitude'] for w in whs if use_w[w].varValue > 0.5] + [custs[c]['Longitude'] for c in custs]
-            m = folium.Map(location=[np.mean(all_lats), np.mean(all_lons)], zoom_start=4, tiles="OpenStreetMap")
+            valid_lats = [whs[w]['Latitude'] for w in whs if use_w[w].varValue > 0.5] + [custs[c]['Latitude'] for c in custs]
+            valid_lons = [whs[w]['Longitude'] for w in whs if use_w[w].varValue > 0.5] + [custs[c]['Longitude'] for c in custs]
+            m = folium.Map(location=[np.mean(valid_lats), np.mean(valid_lons)], zoom_start=4, tiles="OpenStreetMap")
             folium.TileLayer(tiles="https://{s}://{z}/{x}/{y}{r}.png", attr="&copy; CARTO", name="English labels", overlay=True, control=False).add_to(m)
             
-            fg_nodes = folium.FeatureGroup(name="Facilities & Nodes").add_to(m)
-            fg_lanes = folium.FeatureGroup(name="Active Supply Lines").add_to(m)
+            fg_factories = folium.FeatureGroup(name="Factories (Red)", show=True).add_to(m)
+            fg_warehouses = folium.FeatureGroup(name="Open Warehouses (Orange)", show=True).add_to(m)
+            fg_customers = folium.FeatureGroup(name="Customers (Blue)", show=True).add_to(m)
+            fg_inbound_lanes = folium.FeatureGroup(name="Inbound Lines (Red)", show=True).add_to(m)
+            fg_outbound_lanes = folium.FeatureGroup(name="Outbound Lines (Blue)", show=True).add_to(m)
             
+            for (f, w), f_val in flow_fw.items():
+                if f_val.varValue > 1.0:
+                    folium.PolyLine(locations=[[facts[f]['Latitude'], facts[f]['Longitude']], [whs[w]['Latitude'], whs[w]['Longitude']]], color="red", weight=line_thickness + 1, opacity=0.7).add_to(fg_inbound_lanes)
             for (w, c), f_val in flow_wc.items():
                 if f_val.varValue > 1.0:
-                    folium.PolyLine(locations=[[whs[w]['Latitude'], whs[w]['Longitude']], [custs[c]['Latitude'], custs[c]['Longitude']]], color="blue", weight=line_thickness, opacity=0.5).add_to(fg_lanes)
-                    folium.CircleMarker(location=[custs[c]['Latitude'], custs[c]['Longitude']], radius=4, color="blue", fill=True, popup=f"{c}: {int(f_val.varValue):,} kg").add_to(fg_nodes)
-            
+                    folium.PolyLine(locations=[[whs[w]['Latitude'], whs[w]['Longitude']], [custs[c]['Latitude'], custs[c]['Longitude']]], color="blue", weight=line_thickness, opacity=0.4).add_to(fg_outbound_lanes)
+                    folium.CircleMarker(location=[custs[c]['Latitude'], custs[c]['Longitude']], radius=4, color="blue", fill=True, popup=f"Customer: {c}").add_to(fg_customers)
+            for f in facts:
+                folium.Marker(location=[facts[f]['Latitude'], facts[f]['Longitude']], icon=folium.Icon(color="red", icon="industry", prefix="fa"), popup=f"Factory: {f}").add_to(fg_factories)
             for w in whs:
                 if use_w[w].varValue > 0.5:
-                    folium.Marker(location=[whs[w]['Latitude'], whs[w]['Longitude']], icon=folium.Icon(color="orange", icon="warehouse", prefix="fa"), popup=w).add_to(fg_nodes)
+                    folium.Marker(location=[whs[w]['Latitude'], whs[w]['Longitude']], icon=folium.Icon(color="orange", icon="warehouse", prefix="fa"), popup=f"Warehouse: {w}").add_to(fg_warehouses)
             
             folium.LayerControl(position='topleft', collapsed=True).add_to(m)
             st_folium(m, width="100%", height=650, returned_objects=[])
