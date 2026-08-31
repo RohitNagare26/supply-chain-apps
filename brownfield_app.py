@@ -43,7 +43,7 @@ st.subheader("📤 2. Upload and Define Parameters")
 
 st.sidebar.header("🔧 Settings Menu")
 run_mode = st.sidebar.selectbox("Workflow Operational Mode", ["Run Network Optimization", "Run Current As-Is Baseline"])
-max_wh = st.sidebar.slider("Maximum Allowed Open Warehouses", min_value=1, max_value=20, value=7)
+target_wh = st.sidebar.slider("Exact Number of Warehouses to Open", min_value=1, max_value=100, value=7)
 dist_unit = st.sidebar.selectbox("Distance Calculation Metric", ["Kilometers", "Miles"])
 line_thickness = st.sidebar.slider("Flow Path Line Thickness", min_value=1.0, max_value=5.0, value=2.0)
 
@@ -87,7 +87,6 @@ if uploaded_file is not None:
             min_w = pd.to_numeric(row.get('Minimum Weight', 0), errors='coerce') or 0
             max_w = pd.to_numeric(row.get('Maximum Weight', 0), errors='coerce') or 0
             fixed_c = pd.to_numeric(row.get('Fixed Costs', 0), errors='coerce') or 0
-            
             if max_w < min_w:
                 error_logs.append(f"❌ **Warehouse Contradiction**: '{row['Name']}' Max Weight ({max_w}) is smaller than Min Weight ({min_w}).")
                 validation_passed = False
@@ -151,7 +150,8 @@ if uploaded_file is not None:
                     prob += lpSum([flow_wc[w, c] for c in custs]) <= whs[w]['Maximum Weight'] * use_w[w]
                     prob += lpSum([flow_wc[w, c] for c in custs]) >= whs[w]['Minimum Weight'] * use_w[w]
 
-                prob += lpSum([use_w[w] for w in whs]) <= max_wh
+                if run_mode == "Run Network Optimization":
+                    prob += lpSum([use_w[w] for w in whs]) == target_wh
 
                 inbound_cost_expr = lpSum([flow_fw[f, w] * get_degressive_rate(dist_fw[f][w], facts[f].get('Truck Costs per km/mi [first km/mi]', 1), facts[f].get('Truck Costs per km/mi [1000 km/mi]', 1)) for f in facts for w in whs])
                 outbound_cost_expr = lpSum([flow_wc[w, c] * get_degressive_rate(dist_wc[w][c], whs[w].get('Truck Costs per km/mi [first km/mi]', 1), whs[w].get('Truck Costs per km/mi [1000 km/mi]', 1)) for w in whs for c in custs])
@@ -172,7 +172,7 @@ if uploaded_file is not None:
                     var_tot = sum([flow_wc_res.get((w, c), 0) * whs[w]['Costs per Weight Unit'] for w in whs for c in custs])
                     st.session_state.prob_results = (int(prob.objective.value()), wh_open_res, flow_fw_res, flow_wc_res, inbound_tot, outbound_tot, fixed_tot, var_tot)
                 else:
-                    st.error("No optimal solution path found under current parameters.")
+                    st.error("No optimal solution path feasible under current warehouse target configuration constraints.")
 
         if st.session_state.optimized:
             cost, wh_open, flow_fw_res, flow_wc_res, inbound_tot, outbound_tot, fixed_tot, var_tot = st.session_state.prob_results
@@ -189,6 +189,7 @@ if uploaded_file is not None:
             tab_doc, tab_dash, tab_map = st.tabs(["📥 1. Download Excel Workbook", "📈 2. View Performance Dashboard", "🗺️ 3. View Interactive Network Map"])
             
             with tab_doc:
+                st.markdown("### Output Generation Export Link")
                 open_wh_rows = []
                 for w in whs:
                     if wh_open[w] > 0.5:
@@ -264,45 +265,51 @@ if uploaded_file is not None:
                 v3.metric("FIXED LEASES", f"${int(sc['fixed_tot'])}")
                 v4.metric("VARIABLE HANDLING", f"${int(sc['var_tot'])}")
 
+        # FIXED/MODIFIED: Added a clean sidebar toggle checkbox to activate or collapse the Comparison Room layout dynamically
         if len(st.session_state.scenarios) >= 2:
-            st.markdown("---")
-            st.subheader("⚖️ 4. Side-by-Side Scenario Comparison Room")
-            st.markdown("Select any two saved run calculation names from the vaults below to display dashboard metrics and maps side-by-side.")
+            st.sidebar.markdown("---")
+            st.sidebar.header("⚖️ Comparison Room Settings")
+            show_comparison = st.sidebar.checkbox("Activate Side-by-Side Comparison Screen", value=False)
             
-            scen_list = list(st.session_state.scenarios.keys())
-            c1, c2 = st.columns(2)
-            comp1 = c1.selectbox("Select Baseline Run (Left Column)", scen_list, index=0)
-            comp2 = c2.selectbox("Select Challenger Run (Right Column)", scen_list, index=1)
-            
-            s1 = st.session_state.scenarios[comp1]
-            s2 = st.session_state.scenarios[comp2]
-            
-            col_left, col_right = st.columns(2)
-            with col_left:
-                st.markdown(f"### 📈 {comp1} Executive Dashboard")
-                st.metric("Consolidated Landed Budget ($)", f"{s1['cost']:,}")
-                st.metric("Active Network Hub Count", f"{int(sum([s1['wh_open'][w] for w in whs]))} Active WH")
+            if show_comparison:
+                st.markdown("---")
+                st.subheader("⚖️ 4. Side-by-Side Scenario Comparison Room")
+                st.markdown("Select any two saved run calculation names from the vaults below to display dashboard metrics and maps side-by-side.")
                 
-                st.markdown(f"### 🗺️ {comp1} Regional Node Map")
-                m1 = folium.Map(location=[39.8283, -98.5795], zoom_start=4)
-                for w in whs:
-                    if s1['wh_open'][w] > 0.5: folium.Marker([whs[w]['Latitude'], whs[w]['Longitude']], icon=folium.Icon(color="red", icon="warehouse", prefix="fa")).add_to(m1)
-                for (w, c), val in s1['flow_wc'].items():
-                    folium.PolyLine([[whs[w]['Latitude'], whs[w]['Longitude']], [custs[c]['Latitude'], custs[c]['Longitude']]], color="red", weight=2).add_to(m1)
-                st_folium(m1, width="100%", height=400, key="map_scen_left", returned_objects=[])
+                scen_list = list(st.session_state.scenarios.keys())
+                c1, c2 = st.columns(2)
+                comp1 = c1.selectbox("Select Baseline Run (Left Column)", scen_list, index=0)
+                comp2 = c2.selectbox("Select Challenger Run (Right Column)", scen_list, index=1)
                 
-            with col_right:
-                st.markdown(f"### 📈 {comp2} Executive Dashboard")
-                st.metric("Consolidated Landed Budget ($)", f"{s2['cost']:,}", delta=int(s2['cost'] - s1['cost']), delta_color="inverse")
-                st.metric("Active Network Hub Count", f"{int(sum([s2['wh_open'][w] for w in whs]))} Active WH")
+                s1 = st.session_state.scenarios[comp1]
+                s2 = st.session_state.scenarios[comp2]
                 
-                st.markdown(f"### 🗺️ {comp2} Regional Node Map")
-                m2 = folium.Map(location=[39.8283, -98.5795], zoom_start=4)
-                for w in whs:
-                    if s2['wh_open'][w] > 0.5: folium.Marker([whs[w]['Latitude'], whs[w]['Longitude']], icon=folium.Icon(color="green", icon="warehouse", prefix="fa")).add_to(m2)
-                for (w, c), val in s2['flow_wc'].items():
-                    folium.PolyLine([[whs[w]['Latitude'], whs[w]['Longitude']], [custs[c]['Latitude'], custs[c]['Longitude']]], color="green", weight=2).add_to(m2)
-                st_folium(m2, width="100%", height=400, key="map_scen_right", returned_objects=[])
+                col_left, col_right = st.columns(2)
+                with col_left:
+                    st.markdown(f"### 📈 {comp1} Executive Dashboard")
+                    st.metric("Consolidated Landed Budget ($)", f"{s1['cost']:,}")
+                    st.metric("Active Network Hub Count", f"{int(sum([s1['wh_open'][w] for w in whs]))} Active WH")
+                    
+                    st.markdown(f"### 🗺️ {comp1} Regional Node Map")
+                    m1 = folium.Map(location=[39.8283, -98.5795], zoom_start=4)
+                    for w in whs:
+                        if s1['wh_open'][w] > 0.5: folium.Marker([whs[w]['Latitude'], whs[w]['Longitude']], icon=folium.Icon(color="red", icon="warehouse", prefix="fa")).add_to(m1)
+                    for (w, c), val in s1['flow_wc'].items():
+                        folium.PolyLine([[whs[w]['Latitude'], whs[w]['Longitude']], [custs[c]['Latitude'], custs[c]['Longitude']]], color="red", weight=2).add_to(m1)
+                    st_folium(m1, width="100%", height=400, key="map_scen_left", returned_objects=[])
+                    
+                with col_right:
+                    st.markdown(f"### 📈 {comp2} Executive Dashboard")
+                    st.metric("Consolidated Landed Budget ($)", f"{s2['cost']:,}", delta=int(s2['cost'] - s1['cost']), delta_color="inverse")
+                    st.metric("Active Network Hub Count", f"{int(sum([s2['wh_open'][w] for w in whs]))} Active WH")
+                    
+                    st.markdown(f"### 🗺️ {comp2} Regional Node Map")
+                    m2 = folium.Map(location=[39.8283, -98.5795], zoom_start=4)
+                    for w in whs:
+                        if s2['wh_open'][w] > 0.5: folium.Marker([whs[w]['Latitude'], whs[w]['Longitude']], icon=folium.Icon(color="green", icon="warehouse", prefix="fa")).add_to(m2)
+                    for (w, c), val in s2['flow_wc'].items():
+                        folium.PolyLine([[whs[w]['Latitude'], whs[w]['Longitude']], [custs[c]['Latitude'], custs[c]['Longitude']]], color="green", weight=2).add_to(m2)
+                    st_folium(m2, width="100%", height=400, key="map_scen_right", returned_objects=[])
 
     except Exception as e:
         st.error(f"Error compiling layout system: {str(e)}")
