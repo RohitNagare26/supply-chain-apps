@@ -104,11 +104,11 @@ if uploaded_file is not None:
             c_lat_avg = df_input['Latitude'].mean()
             c_lon_avg = df_input['Longitude'].mean()
             
-            # FIXED: Set to standard Humanitarian OpenStreetMap tile layout which defaults strictly to English
+            # FIXED: Forced clean, global CartoDB Positron maps which overwrite native scripts with pure English
             m = folium.Map(
                 location=[c_lat_avg, c_lon_avg], zoom_start=5, control_scale=True,
-                tiles="https://{s}.tile.openstreetmap.fr/hot/{z}/{x}/{y}.png",
-                attr="&copy; OpenStreetMap contributors, Tiles style by Humanitarian OpenStreetMap Team"
+                tiles="https://{s}://{z}/{x}/{y}{r}.png",
+                attr="&copy; <a href='https://openstreetmap.org'>OpenStreetMap</a> contributors &copy; <a href='https://carto.com'>CARTO</a>"
             )
             fg_locations = folium.FeatureGroup(name="Locations (Customers)", show=True).add_to(m)
             fg_relations = folium.FeatureGroup(name="Relations (Flow Lines)", show=True).add_to(m)
