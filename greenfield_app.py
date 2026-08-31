@@ -56,10 +56,11 @@ if uploaded_file is not None:
             centers_data = []
             for i, center in enumerate(centers_output):
                 cluster_weight = df_input[df_input['Center_ID'] == i]['Weight'].sum()
+                flat_center = center.flatten()
                 centers_data.append({
                     "Center Name": f"Center {i+1}",
-                    "Center Latitude": round(float(center), 6),
-                    "Center Longitude": round(float(center), 6),
+                    "Center Latitude": round(float(flat_center[0]), 6),
+                    "Center Longitude": round(float(flat_center[1]), 6),
                     "Weight": int(cluster_weight)
                 })
             df_centers = pd.DataFrame(centers_data)
@@ -71,7 +72,7 @@ if uploaded_file is not None:
                 c_lon = df_centers.loc[c_idx, 'Center Longitude']
                 c_name = df_centers.loc[c_idx, 'Center Name']
                 distance_val = haversine_distance(row['Latitude'], row['Longitude'], c_lat, c_lon)
-                final_distance = round(float(distance_val), 2)
+                final_distance = round(float(np.ravel(distance_val)[0]), 2)
                 display_color = cluster_colors[c_idx % len(cluster_colors)] if cust_color_mode == "Unique Cluster Colors" else cust_base_color
                 assigned_data.append({
                     "Name": row['Name'], "Country": row.get('Country', ''), "State": row.get('State', ''),
@@ -103,8 +104,6 @@ if uploaded_file is not None:
             st.subheader("🗺️ Network Allocation Map")
             c_lat_avg = df_input['Latitude'].mean()
             c_lon_avg = df_input['Longitude'].mean()
-            
-            # FIXED: Returned to stable OpenStreetMap tiles, but applied an exclusive English-labeled mapping layer overlay
             m = folium.Map(location=[c_lat_avg, c_lon_avg], zoom_start=5, control_scale=True, tiles="OpenStreetMap")
             folium.TileLayer(
                 tiles="https://{s}://{z}/{x}/{y}{r}.png",
