@@ -23,7 +23,7 @@ def get_degressive_rate(dist, cost_1, cost_1000):
 
 st.set_page_config(layout="wide")
 st.title("🏭 Brownfield Network Infrastructure Optimizer")
-st.markdown("Upload multi-tab network matrices to execute capacity-constrained mixed-integer optimizations via HiGHS.")
+st.markdown("Upload your supply chain data sheet to execute capacity-constrained optimizations via HiGHS.")
 
 st.sidebar.header("🔧 Optimization Settings")
 run_mode = st.sidebar.selectbox("Workflow Operational Mode", ["Run Network Optimization", "Run Current As-Is Baseline"])
@@ -33,37 +33,68 @@ st.sidebar.markdown("---")
 st.sidebar.header("🗺️ Map Layout Controls")
 line_thickness = st.sidebar.slider("Flow Path Line Thickness", min_value=1.0, max_value=5.0, value=2.0)
 
-uploaded_file = st.file_uploader("Upload your Master Supply Chain Excel Workbook", type=["xlsx"])
+uploaded_file = st.file_uploader("Upload your Supply Chain Excel Workbook (Single or Multi-Tab)", type=["xlsx"])
 if uploaded_file is not None:
     try:
-        # Load explicit workbook tabs
-        factories_df = pd.read_excel(uploaded_file, sheet_name="Factories").fillna(0)
-        warehouses_df = pd.read_excel(uploaded_file, sheet_name="Warehouses").fillna(0)
-        customers_df = pd.read_excel(uploaded_file, sheet_name="Customers").fillna(0)
-        
-        # Strip string white spaces
+        xl = pd.ExcelFile(uploaded_file)
+        if len(xl.sheet_names) == 1 or "Input" in xl.sheet_names[0] or "Design" in xl.sheet_names[0]:
+            raw_df = pd.read_excel(uploaded_file, header=None)
+            header_idx = None
+            for idx, r in raw_df.iterrows():
+                if "Name" in r.values:
+                    header_idx = idx
+                    break
+            if header_idx is None:
+                st.error("Invalid file structure. Could not find column header labels.")
+                st.stop()
+                
+            headers = [str(h).strip() if pd.notna(h) else f"Empty_{i}" for i, h in enumerate(raw_df.iloc[header_idx])]
+            data_body = raw_df.iloc[header_idx+1:].copy()
+            data_body.columns = headers
+            
+            fact_cols = ['Name', 'Latitude', 'Longitude', 'Truck Capacity Weight', 'Truck Capacity Volume', 
+                         'Minimum FTL Costs', 'Truck Costs per km/mi [first km/mi]', 'Truck Costs per km/mi [1000 km/mi]', 
+                         'Minimum LTL Costs', 'Costs 1/2 Truck [%]']
+            factories_df = data_body.iloc[:, 0:10].dropna(subset=['Name']).copy()
+            factories_df.columns = fact_cols
+            
+            wh_cols = ['Name', 'Latitude', 'Longitude', 'Fixed', 'Minimum Weight', 'Maximum Weight', 
+                       'Minimum Volume', 'Maximum Volume', 'Fixed Costs', 'Costs per Weight Unit', 
+                       'Costs per Volume Unit', 'Truck Capacity Weight', 'Truck Capacity Volume', 
+                       'Truck Costs per km/mi [first km/mi]', 'Truck Costs per km/mi [1000 km/mi]', 
+                       'Minimum LTL Costs', 'Costs 1/2 Truck [%]']
+            warehouses_df = data_body.iloc[:, 11:28].dropna(subset=['Name']).copy()
+            warehouses_df.columns = wh_cols
+            
+            cust_cols = ['Name', 'Latitude', 'Longitude', 'Weight', 'Volume', 'Number of Shipments', 
+                         'Factory', 'Warehouse', 'Maximum Warehouse Distance']
+            customers_df = data_body.iloc[:, 29:38].dropna(subset=['Name']).copy()
+            customers_df.columns = cust_cols
+        else:
+            factories_df = pd.read_excel(uploaded_file, sheet_name=xl.sheet_names[0])
+            warehouses_df = pd.read_excel(uploaded_file, sheet_name=xl.sheet_names[1])
+            customers_df = pd.read_excel(uploaded_file, sheet_name=xl.sheet_names[2])
+
         for df in [factories_df, warehouses_df, customers_df]:
             df.columns = [str(c).strip() for c in df.columns]
-            if 'Name' in df.columns: df['Name'] = df['Name'].astype(str).str.strip()
+            if 'Name' in df.columns: 
+                df['Name'] = df['Name'].astype(str).str.strip()
+            for col in ['Latitude', 'Longitude', 'Weight', 'Volume', 'Fixed Costs', 'Maximum Weight']:
+                if col in df.columns:
+                    df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0)
 
-        # Build clean index dictionaries
         facts = factories_df.set_index('Name').to_dict('index')
         whs = warehouses_df.set_index('Name').to_dict('index')
         custs = customers_df.set_index('Name').to_dict('index')
 
-        # Distance Grid Framework
         dist_fw = {f: {w: haversine_distance(facts[f]['Latitude'], facts[f]['Longitude'], whs[w]['Latitude'], whs[w]['Longitude']) for w in whs} for f in facts}
         dist_wc = {w: {c: haversine_distance(whs[w]['Latitude'], whs[w]['Longitude'], custs[c]['Latitude'], custs[c]['Longitude']) for c in custs} for w in whs}
 
-        # Initialize linear programming problem
         prob = LpProblem("Brownfield_Optimization", LpMinimize)
-
-        # Decision Variables
         use_w = LpVariable.dicts("Open_WH", whs.keys(), cat="Binary")
         flow_fw = LpVariable.dicts("Flow_Fact_WH", [(f, w) for f in facts for w in whs], lowBound=0, cat="Continuous")
         flow_wc = LpVariable.dicts("Flow_WH_Cust", [(w, c) for w in whs for c in custs], lowBound=0, cat="Continuous")
 
-        # Handle hard-coded constraints for "Fixed" or "As-Is Baseline" parameters
         for w in whs:
             if whs[w].get('Fixed', 0) == 1:
                 prob += use_w[w] == 1
@@ -74,17 +105,13 @@ if uploaded_file is not None:
                 if assigned_wh in whs:
                     prob += flow_wc[assigned_wh, c] == custs[c]['Weight'] * custs[c]['Number of Shipments']
                     prob += use_w[assigned_wh] == 1
-                else:
-                    st.error(f"Baseline customer entry '{c}' specifies an invalid warehouse target.")
-                    st.stop()
 
-        # Operational Constraints
         for c in custs:
             if run_mode == "Run Network Optimization":
                 prob += lpSum([flow_wc[w, c] for w in whs]) == custs[c]['Weight'] * custs[c]['Number of Shipments']
             for w in whs:
                 max_d = custs[c].get('Maximum Warehouse Distance', 99999)
-                if dist_wc[w][c] > max_d:
+                if max_d > 0 and dist_wc[w][c] > max_d:
                     prob += flow_wc[w, c] == 0
 
         for w in whs:
@@ -94,57 +121,46 @@ if uploaded_file is not None:
 
         prob += lpSum([use_w[w] for w in whs]) <= max_wh
 
-        # Calculate Transportation and Fixed Operating Coefficients
-        inbound_cost_expr = lpSum([flow_fw[f, w] * get_degressive_rate(dist_fw[f][w], facts[f]['Truck Costs per km/mi [first km/mi]'], facts[f]['Truck Costs per km/mi [1000 km/mi]']) for f in facts for w in whs])
-        outbound_cost_expr = lpSum([flow_wc[w, c] * get_degressive_rate(dist_wc[w][c], whs[w]['Truck Costs per km/mi [first km/mi]'], whs[w]['Truck Costs per km/mi [1000 km/mi]']) for w in whs for c in custs])
+        inbound_cost_expr = lpSum([flow_fw[f, w] * get_degressive_rate(dist_fw[f][w], facts[f].get('Truck Costs per km/mi [first km/mi]', 1), facts[f].get('Truck Costs per km/mi [1000 km/mi]', 1)) for f in facts for w in whs])
+        outbound_cost_expr = lpSum([flow_wc[w, c] * get_degressive_rate(dist_wc[w][c], whs[w].get('Truck Costs per km/mi [first km/mi]', 1), whs[w].get('Truck Costs per km/mi [1000 km/mi]', 1)) for w in whs for c in custs])
         wh_fixed_expr = lpSum([use_w[w] * whs[w]['Fixed Costs'] for w in whs])
         wh_variable_expr = lpSum([flow_wc[w, c] * whs[w]['Costs per Weight Unit'] for w in whs for c in custs])
 
         prob += inbound_cost_expr + outbound_cost_expr + wh_fixed_expr + wh_variable_expr
-
-        # Run HiGHS Solver
         prob.solve(HiGHS_CMD(msg=False))
 
         if LpStatus[prob.status] == "Optimal":
             st.success("Optimization Run Complete!")
-            
-            # Construct summary card data metrics
-            tot_fixed = sum([use_w[w].varValue * whs[w]['Fixed Costs'] for w in whs])
-            tot_var = sum([flow_wc[w, c].varValue * whs[w]['Costs per Weight Unit'] for w in whs for c in custs])
-            tot_trans = prob.objective.value() - (tot_fixed + tot_var)
-            
             kpi1, kpi2, kpi3 = st.columns(3)
             kpi1.metric("Optimization Status", LpStatus[prob.status])
             kpi2.metric("Total System Cost ($)", f"{int(prob.objective.value()):,}")
             kpi3.metric("Open Warehouses", f"{int(sum([use_w[w].varValue for w in whs]))} Active")
             
-            # Generate Open Warehouses Report Table
             wh_report = []
             for w in whs:
                 if use_w[w].varValue > 0.5:
                     wh_report.append({
-                        "Warehouse Name": w,
-                        "Assigned Weight": sum([flow_wc[w, c].varValue for c in custs]),
-                        "Fixed Costs": whs[w]['Fixed Costs'],
-                        "Variable Costs": sum([flow_wc[w, c].varValue * whs[w]['Costs per Weight Unit'] for c in custs])
+                        "Warehouse Name": w, "Assigned Weight": int(sum([flow_wc[w, c].varValue for c in custs])),
+                        "Fixed Costs": int(whs[w]['Fixed Costs']),
+                        "Variable Costs": int(sum([flow_wc[w, c].varValue * whs[w]['Costs per Weight Unit'] for c in custs]))
                     })
             df_wh_out = pd.DataFrame(wh_report)
             st.subheader("📊 Facility Optimization Log")
             st.dataframe(df_wh_out, use_container_width=True, hide_index=True)
 
-            # Generate Interactive Routing Map
             st.subheader("🗺️ Network Optimization Flow Map")
-            m = folium.Map(location=[39.8283, -98.5795], zoom_start=4, tiles="OpenStreetMap")
+            all_lats = [whs[w]['Latitude'] for w in whs if use_w[w].varValue > 0.5] + [custs[c]['Latitude'] for c in custs]
+            all_lons = [whs[w]['Longitude'] for w in whs if use_w[w].varValue > 0.5] + [custs[c]['Longitude'] for c in custs]
+            m = folium.Map(location=[np.mean(all_lats), np.mean(all_lons)], zoom_start=4, tiles="OpenStreetMap")
             folium.TileLayer(tiles="https://{s}://{z}/{x}/{y}{r}.png", attr="&copy; CARTO", name="English labels", overlay=True, control=False).add_to(m)
             
             fg_nodes = folium.FeatureGroup(name="Facilities & Nodes").add_to(m)
             fg_lanes = folium.FeatureGroup(name="Active Supply Lines").add_to(m)
             
-            # Map Active Delivery Channels
             for (w, c), f_val in flow_wc.items():
                 if f_val.varValue > 1.0:
-                    folium.PolyLine(locations=[[whs[w]['Latitude'], whs[w]['Longitude']], [custs[c]['Latitude'], custs[c]['Longitude']]], color="blue", weight=line_thickness, opacity=0.6).add_to(fg_lanes)
-                    folium.CircleMarker(location=[custs[c]['Latitude'], custs[c]['Longitude']], radius=4, color="blue", fill=True, popup=c).add_to(fg_nodes)
+                    folium.PolyLine(locations=[[whs[w]['Latitude'], whs[w]['Longitude']], [custs[c]['Latitude'], custs[c]['Longitude']]], color="blue", weight=line_thickness, opacity=0.5).add_to(fg_lanes)
+                    folium.CircleMarker(location=[custs[c]['Latitude'], custs[c]['Longitude']], radius=4, color="blue", fill=True, popup=f"{c}: {int(f_val.varValue):,} kg").add_to(fg_nodes)
             
             for w in whs:
                 if use_w[w].varValue > 0.5:
@@ -153,9 +169,8 @@ if uploaded_file is not None:
             folium.LayerControl(position='topleft', collapsed=True).add_to(m)
             st_folium(m, width="100%", height=650, returned_objects=[])
         else:
-            st.error("HiGHS Solver engine was unable to compute a feasible solution for this model configuration.")
-            
+            st.error("HiGHS Solver engine was unable to compute an optimal distribution pattern.")
     except Exception as e:
-        st.error(f"Error parsing workbook tabs: {str(e)}")
+        st.error(f"Error parsing workbook layout matrix: {str(e)}")
 else:
-    st.info("Waiting for multi-tab Input Excel workbook upload to parse parameters.")
+    st.info("Waiting for your optimization data sheet upload.")
