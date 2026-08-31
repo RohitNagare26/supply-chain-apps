@@ -54,8 +54,8 @@ if uploaded_file is not None:
                 cluster_weight = df_input[df_input['Center_ID'] == i]['Weight'].sum()
                 centers_data.append({
                     "Center Name": f"Center {i+1}",
-                    "Center Latitude": float(center[0]),
-                    "Center Longitude": float(center[1]),
+                    "Center Latitude": float(center),
+                    "Center Longitude": float(center),
                     "Weight": int(cluster_weight)
                 })
             df_centers = pd.DataFrame(centers_data)
@@ -71,7 +71,7 @@ if uploaded_file is not None:
                 # Compute raw distance scalar
                 distance_val = haversine_distance(row['Latitude'], row['Longitude'], c_lat, c_lon)
                 # Convert the NumPy data type safely to a standard rounded float point
-                final_distance = round(float(np.ravel(distance_val)[0]), 2)
+                final_distance = round(float(np.ravel(distance_val)), 2)
                 
                 assigned_data.append({
                     "Name": row['Name'],
@@ -93,7 +93,7 @@ if uploaded_file is not None:
             
             st.success("Optimization Run Complete!")
             
-            # Split Data Display Layout Tables (FIXED: Explicitly defined columns)
+            # Split Data Display Layout Tables
             col1, col2 = st.columns(2)
             with col1:
                 st.markdown("### CENTERS (Optimal Hub Locations)")
@@ -121,7 +121,15 @@ if uploaded_file is not None:
             # Initialize core map object
             center_lat = df_input['Latitude'].mean()
             center_lon = df_input['Longitude'].mean()
-            m = folium.Map(location=[center_lat, center_lon], zoom_start=5, control_scale=True)
+            
+            # MODIFIED: Swapped default map style with CARTO English-Forced Global Raster Base Tiles
+            m = folium.Map(
+                location=[center_lat, center_lon], 
+                zoom_start=5, 
+                control_scale=True,
+                tiles="https://{s}://{z}/{x}/{y}{r}.png",
+                attr='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors &copy; <a href="https://carto.com/attributions">CARTO</a>'
+            )
             
             # Initialize separate isolatable feature groups for layer control menu
             fg_locations = folium.FeatureGroup(name="Locations (Customers)", show=True).add_to(m)
