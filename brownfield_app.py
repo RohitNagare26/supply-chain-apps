@@ -95,12 +95,14 @@ if uploaded_file is not None:
             df.columns = [str(c).strip() for c in df.columns]
             if 'Name' in df.columns: df['Name'] = df['Name'].astype(str).str.strip()
 
+        # Extract warehouses marked as Fixed (Fixed == 1) in the master list
         fixed_master_warehouses = set()
         if 'Fixed' in warehouses_df.columns:
             for idx, row in warehouses_df.iterrows():
                 if pd.to_numeric(row['Fixed'], errors='coerce') == 1:
                     fixed_master_warehouses.add(str(row['Name']).strip())
 
+        # Extract unique warehouses locked inside the customer rows
         assigned_customer_warehouses = set()
         if 'Warehouse' in customers_df.columns:
             for val in customers_df['Warehouse'].dropna():
@@ -108,11 +110,25 @@ if uploaded_file is not None:
                 if clean_val and clean_val != '0' and clean_val.lower() != 'nan':
                     assigned_customer_warehouses.add(clean_val)
 
+        # Combine both constraint layers into a single master set of mandatory open locations
         mandatory_open_warehouses = fixed_master_warehouses.union(assigned_customer_warehouses)
 
+        # Check combined constraint limits before executing optimization calculations
         if run_mode == "Run Network Optimization" and len(mandatory_open_warehouses) > target_wh:
             validation_passed = False
-            error_logs.append(f"❌ **Integrated Baseline Contradiction**: Your network requires a minimum of **{len(mandatory_open_warehouses)} unique warehouses** to stay open. Your slider setting is currently set to **exactly {target_wh} open facilities**.")
+            error_logs.append(
+                f"❌ **Integrated Baseline Contradiction**: Your network requires a minimum of **{len(mandatory_open_warehouses)} unique warehouses** to stay open "
+                f"({', '.join(sorted(mandatory_open_warehouses))}). This includes **{len(fixed_master_warehouses)} master fixed warehouses** from your facilities list "
+                f"and **{len(assigned_customer_warehouses)} unique customer-locked warehouses**. Your sidebar setting slider is currently set to **exactly {target_wh} open facilities**, "
+                f"which creates an impossible mathematical constraint. Increase the slider setting or clear fixed parameters in your Excel sheet."
+            )
+
+        for idx, row in warehouses_df.iterrows():
+            min_w = pd.to_numeric(row.get('Minimum Weight', 0), errors='coerce') or 0
+            max_w = pd.to_numeric(row.get('Maximum Weight', 0), errors='coerce') or 0
+            if max_w < min_w:
+                error_logs.append(f"❌ **Warehouse Constraint Failure**: '{row['Name']}' Max Weight ({max_w}) is smaller than Min Weight ({min_w}).")
+                validation_passed = False
 
         if not validation_passed:
             st.error("🛑 Modeling Run Aborted: Structural data conflicts caught. Please review specific system errors detailed below:")
@@ -166,10 +182,8 @@ if uploaded_file is not None:
                 elif run_mode == "Run Network Optimization":
                     prob += lpSum([use_w[w] for w in whs]) == target_wh
 
-                # MODIFIED: Embedded continuous FTL/LTL degressive penalty factor coefficients
                 inbound_cost_expr = []
                 for f in facts:
-                    cap_w = facts[f].get('Truck Capacity Weight', 24000) or 24000
                     ltl_p = (facts[f].get('Costs 1/2 Truck [%]', 70) or 70) / 50.0
                     for w in whs:
                         base_r = get_degressive_rate(dist_fw[f][w], facts[f].get('Truck Costs per km/mi [first km/mi]', 1), facts[f].get('Truck Costs per km/mi [1000 km/mi]', 1))
@@ -177,7 +191,6 @@ if uploaded_file is not None:
 
                 outbound_cost_expr = []
                 for w in whs:
-                    cap_w = whs[w].get('Truck Capacity Weight', 24000) or 24000
                     ltl_p = (whs[w].get('Costs 1/2 Truck [%]', 70) or 70) / 50.0
                     for c in custs:
                         base_r = get_degressive_rate(dist_wc[w][c], whs[w].get('Truck Costs per km/mi [first km/mi]', 1), whs[w].get('Truck Costs per km/mi [1000 km/mi]', 1))
@@ -195,15 +208,14 @@ if uploaded_file is not None:
                     flow_fw_res = {(f, w): flow_fw[f, w].varValue for f in facts for w in whs if flow_fw[f, w].varValue > 1.0}
                     flow_wc_res = {(w, c): flow_wc[w, c].varValue for w in whs for c in custs if flow_wc[w, c].varValue > 1.0}
                     
-                    # Recalculate true summary variables safely for performance dashboards
                     inbound_tot = sum([flow_fw_res.get((f, w), 0) * get_degressive_rate(dist_fw[f][w], facts[f].get('Truck Costs per km/mi [first km/mi]', 1), facts[f].get('Truck Costs per km/mi [1000 km/mi]', 1)) * ((facts[f].get('Costs 1/2 Truck [%]', 70))/50.0) for f in facts for w in whs])
                     outbound_tot = sum([flow_wc_res.get((w, c), 0) * get_degressive_rate(dist_wc[w][c], whs[w].get('Truck Costs per km/mi [first km/mi]', 1), whs[w].get('Truck Costs per km/mi [1000 km/mi]', 1)) * ((whs[w].get('Costs 1/2 Truck [%]', 70))/50.0) for w in whs for c in custs])
                     fixed_tot = sum([wh_open_res[w] * whs[w]['Fixed Costs'] for w in whs])
                     var_tot = sum([flow_wc_res.get((w, c), 0) * whs[w]['Costs per Weight Unit'] for w in whs for c in custs])
-                    
                     st.session_state.prob_results = (int(prob.objective.value()), wh_open_res, flow_fw_res, flow_wc_res, inbound_tot, outbound_tot, fixed_tot, var_tot)
                 else:
                     st.error("The calculation parameters generate an unfeasible solution space.")
+
         if st.session_state.optimized:
             cost, wh_open, flow_fw_res, flow_wc_res, inbound_tot, outbound_tot, fixed_tot, var_tot = st.session_state.prob_results
             st.markdown("---")
@@ -215,11 +227,11 @@ if uploaded_file is not None:
                     "inbound_tot": inbound_tot, "outbound_tot": outbound_tot, "fixed_tot": fixed_tot, "var_tot": var_tot
                 }
                 st.success(f"Pinned '{scen_name}' to system memory vaults successfully!")
-
             st.subheader("📊 3. Exploration Results Panel")
             tab_doc, tab_dash, tab_map = st.tabs(["📥 1. Download Excel Workbook", "📈 2. View Performance Dashboard", "🗺️ 3. View Interactive Network Map"])
             
             with tab_doc:
+                st.markdown("### Output Generation Export Link")
                 open_wh_rows = []
                 for w in whs:
                     if wh_open[w] > 0.5:
@@ -239,7 +251,7 @@ if uploaded_file is not None:
                     pd.DataFrame(f_w_rows).to_excel(writer, sheet_name="Factory-Warehouse Assignment", index=False)
                     pd.DataFrame(w_c_rows).to_excel(writer, sheet_name="Customer-Warehouse Assignment", index=False)
                     pd.DataFrame(kpi_rows).to_excel(writer, sheet_name="KPIs", index=False)
-                st.download_button(label="📥 Download Consolidated Optimized Solutions Workbook (Sheet 2 Format)", data=out_buffer.getvalue(), file_name="Optimized_Network_Output.xlsx")
+                st.download_button(label="📥 Download Consolidated Optimized Solutions Workbook", data=out_buffer.getvalue(), file_name="Optimized_Network_Output.xlsx")
 
             with tab_dash:
                 st.markdown("### Executive Landed Cost Performance Dashboard")
@@ -261,11 +273,10 @@ if uploaded_file is not None:
                 v_lats = [whs[w]['Latitude'] for w in whs if wh_open[w] > 0.5] + [custs[c]['Latitude'] for c in custs]
                 v_lons = [whs[w]['Longitude'] for w in whs if wh_open[w] > 0.5] + [custs[c]['Longitude'] for c in custs]
                 
-                # MODIFIED: Forced premium CartoDB Dark Matter base canvas styling
                 map_obj = folium.Map(
                     location=[np.mean(v_lats), np.mean(v_lons)], zoom_start=4,
-                    tiles="https://{s}://{z}/{x}/{y}{r}.png",
-                    attr='&copy; <a href="https://openstreetmap.org">OpenStreetMap</a> contributors &copy; <a href="https://carto.com">CARTO</a>'
+                    tiles="https://stadiamaps.com{z}/{x}/{y}{r}.png",
+                    attr='&copy; <a href="https://stadiamaps.com">Stadia Maps</a> &copy; OpenMapTiles &copy; OpenStreetMap'
                 )
                 
                 fg_factories = folium.FeatureGroup(name="Factories (Green Glow)", show=True).add_to(map_obj)
@@ -276,20 +287,28 @@ if uploaded_file is not None:
                 
                 for (f, w), val in flow_fw_res.items():
                     folium.PolyLine([[facts[f]['Latitude'], facts[f]['Longitude']], [whs[w]['Latitude'], whs[w]['Longitude']]], color="#00A3FF", weight=line_thickness + 1, opacity=0.8).add_to(fg_inbound_lanes)
-                
-                # RE-ENGINEERED: Draws direct dedicated point-to-point flow vectors matching Gurobi's exact map view layout
                 for (w, c), val in flow_wc_res.items():
                     folium.PolyLine([[whs[w]['Latitude'], whs[w]['Longitude']], [custs[c]['Latitude'], custs[c]['Longitude']]], color="#FFFFFF", weight=1.0, opacity=0.35).add_to(fg_outbound_lanes)
                     folium.CircleMarker([custs[c]['Latitude'], custs[c]['Longitude']], radius=3.5, color="#00A3FF", fill=True, fill_color="#00A3FF", fill_opacity=0.7, popup=c).add_to(fg_customers)
-                
-                for f in facts: 
-                    folium.Marker([facts[f]['Latitude'], facts[f]['Longitude']], icon=folium.Icon(color="green", icon="industry", prefix="fa"), popup=f).add_to(fg_factories)
+                for f in facts: folium.Marker([facts[f]['Latitude'], facts[f]['Longitude']], icon=folium.Icon(color="green", icon="industry", prefix="fa"), popup=f).add_to(fg_factories)
                 for w in whs:
-                    if wh_open[w] > 0.5: 
-                        folium.Marker([whs[w]['Latitude'], whs[w]['Longitude']], icon=folium.Icon(color="orange", icon="warehouse", prefix="fa"), popup=w).add_to(fg_warehouses)
+                    if wh_open[w] > 0.5: folium.Marker([whs[w]['Latitude'], whs[w]['Longitude']], icon=folium.Icon(color="orange", icon="warehouse", prefix="fa"), popup=w).add_to(fg_warehouses)
                     
                 folium.LayerControl(position='topleft', collapsed=True).add_to(map_obj)
                 st_folium(map_obj, width="100%", height=600, returned_objects=[], key="main_map")
+
+        if len(st.session_state.scenarios) > 0:
+            st.sidebar.markdown("---")
+            st.sidebar.header("📁 Saved Scenarios Vault")
+            view_scen = st.sidebar.selectbox("Quick-Inspect Saved Scenario Details", ["-- Select Scenario --"] + list(st.session_state.scenarios.keys()))
+            if view_scen != "-- Select Scenario --":
+                sc = st.session_state.scenarios[view_scen]
+                st.markdown(f"### 🔍 Vault Inspection View: {view_scen}")
+                v1, v2, v3, v4 = st.columns(4)
+                v1.metric("TARGET COST", f"${sc['cost']:,}")
+                v2.metric("TRANSPORT OVERHEAD", f"${int(sc['inbound_tot'] + sc['outbound_tot'])}")
+                v3.metric("FIXED LEASES", f"${int(sc['fixed_tot'])}")
+                v4.metric("VARIABLE HANDLING", f"${int(sc['var_tot'])}")
 
         if len(st.session_state.scenarios) >= 2:
             st.sidebar.markdown("---")
@@ -303,13 +322,12 @@ if uploaded_file is not None:
                 c1, c2 = st.columns(2)
                 comp1 = c1.selectbox("Select Baseline Run (Left Column)", scen_list, index=0)
                 comp2 = c2.selectbox("Select Challenger Run (Right Column)", scen_list, index=1)
-                
                 s1, s2 = st.session_state.scenarios[comp1], st.session_state.scenarios[comp2]
                 col_left, col_right = st.columns(2)
                 with col_left:
                     st.markdown(f"### 📈 {comp1} Executive Dashboard")
                     st.metric("Consolidated Landed Budget ($)", f"{s1['cost']:,}")
-                    m1 = folium.Map(location=[39.82, -98.57], zoom_start=4, tiles="https://{s}://{z}/{x}/{y}{r}.png", attr="CARTO")
+                    m1 = folium.Map(location=[39.82, -98.57], zoom_start=4, tiles="https://stadiamaps.com{z}/{x}/{y}{r}.png", attr="Stadia")
                     for w in whs:
                         if s1['wh_open'][w] > 0.5: folium.Marker([whs[w]['Latitude'], whs[w]['Longitude']], icon=folium.Icon(color="orange")).add_to(m1)
                     for (w, c), val in s1['flow_wc'].items(): folium.PolyLine([[whs[w]['Latitude'], whs[w]['Longitude']], [custs[c]['Latitude'], custs[c]['Longitude']]], color="#00A3FF", weight=1).add_to(m1)
@@ -317,7 +335,7 @@ if uploaded_file is not None:
                 with col_right:
                     st.markdown(f"### 📈 {comp2} Executive Dashboard")
                     st.metric("Consolidated Landed Budget ($)", f"{s2['cost']:,}", delta=int(s2['cost'] - s1['cost']), delta_color="inverse")
-                    m2 = folium.Map(location=[39.82, -98.57], zoom_start=4, tiles="https://{s}://{z}/{x}/{y}{r}.png", attr="CARTO")
+                    m2 = folium.Map(location=[39.82, -98.57], zoom_start=4, tiles="https://stadiamaps.com{z}/{x}/{y}{r}.png", attr="Stadia")
                     for w in whs:
                         if s2['wh_open'][w] > 0.5: folium.Marker([whs[w]['Latitude'], whs[w]['Longitude']], icon=folium.Icon(color="green")).add_to(m2)
                     for (w, c), val in s2['flow_wc'].items(): folium.PolyLine([[whs[w]['Latitude'], whs[w]['Longitude']], [custs[c]['Latitude'], custs[c]['Longitude']]], color="#00A3FF", weight=1).add_to(m2)
