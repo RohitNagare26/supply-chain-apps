@@ -58,8 +58,8 @@ if uploaded_file is not None:
                 cluster_weight = df_input[df_input['Center_ID'] == i]['Weight'].sum()
                 centers_data.append({
                     "Center Name": f"Center {i+1}",
-                    "Center Latitude": round(float(center[0]), 6),
-                    "Center Longitude": round(float(center[1]), 6),
+                    "Center Latitude": round(float(center), 6),
+                    "Center Longitude": round(float(center), 6),
                     "Weight": int(cluster_weight)
                 })
             df_centers = pd.DataFrame(centers_data)
@@ -104,12 +104,16 @@ if uploaded_file is not None:
             c_lat_avg = df_input['Latitude'].mean()
             c_lon_avg = df_input['Longitude'].mean()
             
-            # FIXED: Forced clean, global CartoDB Positron maps which overwrite native scripts with pure English
-            m = folium.Map(
-                location=[c_lat_avg, c_lon_avg], zoom_start=5, control_scale=True,
+            # FIXED: Returned to stable OpenStreetMap tiles, but applied an exclusive English-labeled mapping layer overlay
+            m = folium.Map(location=[c_lat_avg, c_lon_avg], zoom_start=5, control_scale=True, tiles="OpenStreetMap")
+            folium.TileLayer(
                 tiles="https://{s}://{z}/{x}/{y}{r}.png",
-                attr="&copy; <a href='https://openstreetmap.org'>OpenStreetMap</a> contributors &copy; <a href='https://carto.com'>CARTO</a>"
-            )
+                attr="&copy; CARTO",
+                name="English Labels Override",
+                overlay=True,
+                control=False
+            ).add_to(m)
+            
             fg_locations = folium.FeatureGroup(name="Locations (Customers)", show=True).add_to(m)
             fg_relations = folium.FeatureGroup(name="Relations (Flow Lines)", show=True).add_to(m)
             fg_centers = folium.FeatureGroup(name="Center of Gravity (Hubs)", show=True).add_to(m)
