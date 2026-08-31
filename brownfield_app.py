@@ -23,8 +23,8 @@ def get_degressive_rate(dist, cost_1, cost_1000):
     return cost_1 - (slope * dist)
 
 st.set_page_config(layout="wide")
-st.title("🏭 Supply Chain Network Design Framework")
-st.markdown("Download our baseline master structure template, ingest custom enterprise operational profiles, and deploy mixed-integer optimizations natively.")
+st.title("🏭 Network Design Dashboard & Optimizer")
+st.markdown("Download our master data structure template, ingest custom enterprise operational profiles, and run optimizations via CBC.")
 
 if "scenarios" not in st.session_state: st.session_state.scenarios = {}
 if "optimized" not in st.session_state: st.session_state.optimized = False
@@ -59,7 +59,7 @@ if uploaded_file is not None:
                     header_idx = idx
                     break
             if header_idx is None:
-                st.error("Invalid file structure. Column headers missing.")
+                st.error("❌ Invalid File Structure. Could not detect the master header row containing 'Name'.")
                 st.stop()
             headers = [str(h).strip() if pd.notna(h) else f"Empty_{i}" for i, h in enumerate(raw_df.iloc[header_idx])]
             data_body = raw_df.iloc[header_idx+1:].copy()
@@ -76,15 +76,45 @@ if uploaded_file is not None:
             warehouses_df = pd.read_excel(uploaded_file, sheet_name="Warehouses")
             customers_df = pd.read_excel(uploaded_file, sheet_name="Customers")
 
+        validation_passed = True
+        error_logs = []
+
         for df in [factories_df, warehouses_df, customers_df]:
             df.columns = [str(c).strip() for c in df.columns]
             if 'Name' in df.columns: df['Name'] = df['Name'].astype(str).str.strip()
+
+        for idx, row in warehouses_df.iterrows():
+            min_w = pd.to_numeric(row.get('Minimum Weight', 0), errors='coerce') or 0
+            max_w = pd.to_numeric(row.get('Maximum Weight', 0), errors='coerce') or 0
+            fixed_c = pd.to_numeric(row.get('Fixed Costs', 0), errors='coerce') or 0
+            
+            if max_w < min_w:
+                error_logs.append(f"❌ **Warehouse Contradiction**: '{row['Name']}' Max Weight ({max_w}) is smaller than Min Weight ({min_w}).")
+                validation_passed = False
+            if pd.to_numeric(row.get('Latitude', 0), errors='coerce') == 0:
+                error_logs.append(f"⚠️ **Missing Coordinates**: Warehouse '{row['Name']}' is missing valid coordinates.")
+                validation_passed = False
+            if fixed_c < 0:
+                error_logs.append(f"❌ **Cost Contradiction**: Warehouse '{row['Name']}' has a negative Fixed Cost ({fixed_c}).")
+                validation_passed = False
+
+        for idx, row in customers_df.iterrows():
+            cust_wt = pd.to_numeric(row.get('Weight', 0), errors='coerce') or 0
+            cust_sh = pd.to_numeric(row.get('Number of Shipments', 0), errors='coerce') or 0
+            if cust_wt <= 0 or cust_sh <= 0:
+                error_logs.append(f"⚠️ **Shipment Contradiction**: Customer '{row['Name']}' has invalid Weight or Shipments data.")
+                validation_passed = False
+
+        if not validation_passed:
+            st.error("🛑 Optimization Blocked: Your spreadsheet data contains contradictions. Fix the items below:")
+            for log in error_logs: st.markdown(log)
+            st.stop()
+        else:
+            st.sidebar.success("✅ Data Integrity Verified!")
+
+        for df in [factories_df, warehouses_df, customers_df]:
             for col in ['Latitude', 'Longitude', 'Weight', 'Volume', 'Fixed Costs', 'Maximum Weight', 'Number of Shipments', 'Costs per Weight Unit']:
                 if col in df.columns: df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0)
-
-        factories_df = factories_df[factories_df['Latitude'] != 0].copy()
-        warehouses_df = warehouses_df[warehouses_df['Latitude'] != 0].copy()
-        customers_df = customers_df[customers_df['Latitude'] != 0].copy()
 
         facts = factories_df.set_index('Name').to_dict('index')
         whs = warehouses_df.set_index('Name').to_dict('index')
@@ -136,29 +166,29 @@ if uploaded_file is not None:
                     wh_open_res = {w: use_w[w].varValue for w in whs}
                     flow_fw_res = {(f, w): flow_fw[f, w].varValue for f in facts for w in whs if flow_fw[f, w].varValue > 1.0}
                     flow_wc_res = {(w, c): flow_wc[w, c].varValue for w in whs for c in custs if flow_wc[w, c].varValue > 1.0}
-                    
                     inbound_tot = sum([flow_fw_res.get((f, w), 0) * get_degressive_rate(dist_fw[f][w], facts[f].get('Truck Costs per km/mi [first km/mi]', 1), facts[f].get('Truck Costs per km/mi [1000 km/mi]', 1)) for f in facts for w in whs])
                     outbound_tot = sum([flow_wc_res.get((w, c), 0) * get_degressive_rate(dist_wc[w][c], whs[w].get('Truck Costs per km/mi [first km/mi]', 1), whs[w].get('Truck Costs per km/mi [1000 km/mi]', 1)) for w in whs for c in custs])
                     fixed_tot = sum([wh_open_res[w] * whs[w]['Fixed Costs'] for w in whs])
                     var_tot = sum([flow_wc_res.get((w, c), 0) * whs[w]['Costs per Weight Unit'] for w in whs for c in custs])
-                    
                     st.session_state.prob_results = (int(prob.objective.value()), wh_open_res, flow_fw_res, flow_wc_res, inbound_tot, outbound_tot, fixed_tot, var_tot)
                 else:
-                    st.error("No optimal solution path found under current parameter ceilings.")
+                    st.error("No optimal solution path found under current parameters.")
+
         if st.session_state.optimized:
             cost, wh_open, flow_fw_res, flow_wc_res, inbound_tot, outbound_tot, fixed_tot, var_tot = st.session_state.prob_results
             st.markdown("---")
             st.subheader("💾 Save This Configuration Run")
             scen_name = st.text_input("Type an identifiable label for this calculation", f"Scenario {len(st.session_state.scenarios)+1}")
-            if st.button("Save to Comparison Room"):
-                st.session_state.scenarios[scen_name] = {"cost": cost, "wh_open": wh_open, "flow_wc": flow_wc_res, "max_wh": max_wh, "unit": dist_unit}
-                st.success(f"Pinned '{scen_name}' to system memory!")
-
+            if st.button("Save to Storage Vault"):
+                st.session_state.scenarios[scen_name] = {
+                    "cost": cost, "wh_open": wh_open, "flow_wc": flow_wc_res,
+                    "inbound_tot": inbound_tot, "outbound_tot": outbound_tot, "fixed_tot": fixed_tot, "var_tot": var_tot
+                }
+                st.success(f"Pinned '{scen_name}' to system memory vaults successfully!")
             st.subheader("📊 3. Exploration Results Panel")
             tab_doc, tab_dash, tab_map = st.tabs(["📥 1. Download Excel Workbook", "📈 2. View Performance Dashboard", "🗺️ 3. View Interactive Network Map"])
             
             with tab_doc:
-                st.markdown("### Output Generation Export Link")
                 open_wh_rows = []
                 for w in whs:
                     if wh_open[w] > 0.5:
@@ -166,27 +196,18 @@ if uploaded_file is not None:
                         w_vol = sum([flow_wc_res.get((w, c), 0) * (custs[c]['Volume'] / (custs[c]['Weight'] if custs[c]['Weight'] > 0 else 1)) for c in custs])
                         w_sh = sum([custs[c]['Number of Shipments'] for c in custs if flow_wc_res.get((w, c), 0) > 1.0])
                         open_wh_rows.append({"Name": w, "Assigned Weight": int(w_wt), "Assigned Volume": int(w_vol), "Assigned Shipments": int(w_sh), "Fixed Costs": int(whs[w]['Fixed Costs']), "Variable Costs": int(w_wt * whs[w]['Costs per Weight Unit'])})
+                
                 df_tab_wh = pd.DataFrame(open_wh_rows)
-                
-                f_w_rows = []
-                for (f, w), val in flow_fw_res.items():
-                    f_w_rows.append({"Factory Name": f, "Warehouse Name": w, "Weight": int(val), "Distance": round(dist_fw[f][w], 2), "Transport Costs": int(val * get_degressive_rate(dist_fw[f][w], facts[f].get('Truck Costs per km/mi [first km/mi]', 1), facts[f].get('Truck Costs per km/mi [1000 km/mi]', 1)))})
-                df_tab_fw = pd.DataFrame(f_w_rows)
-
-                w_c_rows = []
-                for (w, c), val in flow_wc_res.items():
-                    w_c_rows.append({"Name": c, "Weight": int(custs[c]['Weight']), "Volume": int(custs[c]['Volume']), "Number of Shipments": int(custs[c]['Number of Shipments']), "Warehouse Name": w, "Distance": round(dist_wc[w][c], 2), "Transport Costs": int(val * get_degressive_rate(dist_wc[w][c], whs[w].get('Truck Costs per km/mi [first km/mi]', 1), whs[w].get('Truck Costs per km/mi [1000 km/mi]', 1))), "Factory Name": custs[c]['Factory']})
-                df_tab_wc = pd.DataFrame(w_c_rows)
-                
+                f_w_rows = [{"Factory Name": f, "Warehouse Name": w, "Weight": int(val), "Distance": round(dist_fw[f][w], 2), "Transport Costs": int(val * get_degressive_rate(dist_fw[f][w], facts[f].get('Truck Costs per km/mi [first km/mi]', 1), facts[f].get('Truck Costs per km/mi [1000 km/mi]', 1)))} for (f, w), val in flow_fw_res.items()]
+                w_c_rows = [{"Name": c, "Weight": int(custs[c]['Weight']), "Volume": int(custs[c]['Volume']), "Number of Shipments": int(custs[c]['Number of Shipments']), "Warehouse Name": w, "Distance": round(dist_wc[w][c], 2), "Transport Costs": int(val * get_degressive_rate(dist_wc[w][c], whs[w].get('Truck Costs per km/mi [first km/mi]', 1), whs[w].get('Truck Costs per km/mi [1000 km/mi]', 1))), "Factory Name": custs[c]['Factory']} for (w, c), val in flow_wc_res.items()]
                 kpi_rows = [{"KPI Name": "Value Target Function", "Value": cost}, {"KPI Name": "Optimization Status", "Value": "optimal solution"}, {"KPI Name": "Total Transport Costs", "Value": int(inbound_tot + outbound_tot)}, {"KPI Name": "Fixed Warehouse Costs", "Value": int(fixed_tot)}, {"KPI Name": "Variable Warehouse Costs", "Value": int(var_tot)}]
-                df_tab_kpi = pd.DataFrame(kpi_rows)
-
+                
                 out_buffer = io.BytesIO()
                 with pd.ExcelWriter(out_buffer, engine='openpyxl') as writer:
                     df_tab_wh.to_excel(writer, sheet_name="Open Warehouses", index=False)
-                    df_tab_fw.to_excel(writer, sheet_name="Factory-Warehouse Assignment", index=False)
-                    df_tab_wc.to_excel(writer, sheet_name="Customer-Warehouse Assignment", index=False)
-                    df_tab_kpi.to_excel(writer, sheet_name="KPIs", index=False)
+                    pd.DataFrame(f_w_rows).to_excel(writer, sheet_name="Factory-Warehouse Assignment", index=False)
+                    pd.DataFrame(w_c_rows).to_excel(writer, sheet_name="Customer-Warehouse Assignment", index=False)
+                    pd.DataFrame(kpi_rows).to_excel(writer, sheet_name="KPIs", index=False)
                 st.download_button(label="📥 Download Consolidated Optimized Solutions Workbook (Sheet 2 Format)", data=out_buffer.getvalue(), file_name="Optimized_Network_Output.xlsx")
 
             with tab_dash:
@@ -197,15 +218,12 @@ if uploaded_file is not None:
                 k3.metric("FIXED WAREHOUSE LEASES ($)", f"{int(fixed_tot):,}")
                 k4.metric("VARIABLE HANDLING OVERHEAD ($)", f"{int(var_tot):,}")
                 
-                st.markdown("#### Warehouse Performance & Allocation Cost Breakdown")
                 perf_report = []
                 for w in whs:
                     if wh_open[w] > 0.5:
                         cust_count = sum([1 for c in custs if flow_wc_res.get((w, c), 0) > 1.0])
                         w_wt = sum([flow_wc_res.get((w, c), 0) for c in custs])
-                        f_cost = int(whs[w]['Fixed Costs'])
-                        v_cost = int(w_wt * whs[w]['Costs per Weight Unit'])
-                        perf_report.append({"Active Warehouse": w, "Customers Served": cust_count, "Fixed Operating Costs ($)": f_cost, "Variable Handling Costs ($)": v_cost, "Total Consolidated Warehouse Cost ($)": f_cost + v_cost})
+                        perf_report.append({"Active Warehouse": w, "Customers Served": cust_count, "Fixed Operating Costs ($)": int(whs[w]['Fixed Costs']), "Variable Handling Costs ($)": int(w_wt * whs[w]['Costs per Weight Unit']), "Total Consolidated Warehouse Cost ($)": int(whs[w]['Fixed Costs'] + (w_wt * whs[w]['Costs per Weight Unit']))})
                 st.dataframe(pd.DataFrame(perf_report), use_container_width=True, hide_index=True)
 
             with tab_map:
@@ -213,9 +231,9 @@ if uploaded_file is not None:
                 v_lats = [whs[w]['Latitude'] for w in whs if wh_open[w] > 0.5] + [custs[c]['Latitude'] for c in custs]
                 v_lons = [whs[w]['Longitude'] for w in whs if wh_open[w] > 0.5] + [custs[c]['Longitude'] for c in custs]
                 map_obj = folium.Map(location=[np.mean(v_lats), np.mean(v_lons)], zoom_start=4)
-                folium.TileLayer(tiles="https://{s}://{z}/{x}/{y}{r}.png", attr="&copy; CARTO", name="English labels", overlay=True, control=False).add_to(map_obj)
+                folium.TileLayer(tiles="https://{s}://{z}/{x}/{y}{r}.png", attr="&copy; CARTO", name="Labels", overlay=True, control=False).add_to(map_obj)
                 
-                fg_factories = folium.FeatureGroup(name="Factories (Red Pins)", show=True).add_to(map_obj)
+                fg_factories = folium.FeatureGroup(name="Factories (Red)", show=True).add_to(map_obj)
                 fg_warehouses = folium.FeatureGroup(name="Open Warehouses (Orange)", show=True).add_to(map_obj)
                 fg_customers = folium.FeatureGroup(name="Customers (Blue)", show=True).add_to(map_obj)
                 fg_inbound_lanes = folium.FeatureGroup(name="Inbound Lines (Red)", show=True).add_to(map_obj)
@@ -226,33 +244,66 @@ if uploaded_file is not None:
                 for (w, c), val in flow_wc_res.items():
                     folium.PolyLine([[whs[w]['Latitude'], whs[w]['Longitude']], [custs[c]['Latitude'], custs[c]['Longitude']]], color="blue", weight=line_thickness, opacity=0.4).add_to(fg_outbound_lanes)
                     folium.CircleMarker([custs[c]['Latitude'], custs[c]['Longitude']], radius=4, color="blue", fill=True, popup=c).add_to(fg_customers)
-                for f in facts:
-                    folium.Marker([facts[f]['Latitude'], facts[f]['Longitude']], icon=folium.Icon(color="red", icon="industry", prefix="fa"), popup=f).add_to(fg_factories)
+                for f in facts: folium.Marker([facts[f]['Latitude'], facts[f]['Longitude']], icon=folium.Icon(color="red", icon="industry", prefix="fa"), popup=f).add_to(fg_factories)
                 for w in whs:
                     if wh_open[w] > 0.5: folium.Marker([whs[w]['Latitude'], whs[w]['Longitude']], icon=folium.Icon(color="orange", icon="warehouse", prefix="fa"), popup=w).add_to(fg_warehouses)
                     
                 folium.LayerControl(position='topleft', collapsed=True).add_to(map_obj)
                 st_folium(map_obj, width="100%", height=600, returned_objects=[], key="main_map")
+        if len(st.session_state.scenarios) > 0:
+            st.sidebar.markdown("---")
+            st.sidebar.header("📁 Saved Scenarios Vault")
+            view_scen = st.sidebar.selectbox("Quick-Inspect Saved Scenario Details", ["-- Select Scenario --"] + list(st.session_state.scenarios.keys()))
+            
+            if view_scen != "-- Select Scenario --":
+                sc = st.session_state.scenarios[view_scen]
+                st.markdown(f"### 🔍 Vault Inspection View: {view_scen}")
+                v1, v2, v3, v4 = st.columns(4)
+                v1.metric("TARGET COST", f"${sc['cost']:,}")
+                v2.metric("TRANSPORT OVERHEAD", f"${int(sc['inbound_tot'] + sc['outbound_tot'])}")
+                v3.metric("FIXED LEASES", f"${int(sc['fixed_tot'])}")
+                v4.metric("VARIABLE HANDLING", f"${int(sc['var_tot'])}")
 
         if len(st.session_state.scenarios) >= 2:
             st.markdown("---")
-            st.subheader("⚖_ 4. Side-by-Side Scenario Comparison Room")
+            st.subheader("⚖️ 4. Side-by-Side Scenario Comparison Room")
+            st.markdown("Select any two saved run calculation names from the vaults below to display dashboard metrics and maps side-by-side.")
+            
             scen_list = list(st.session_state.scenarios.keys())
             c1, c2 = st.columns(2)
-            comp1 = c1.selectbox("Select Baseline Run (Left)", scen_list, index=0)
-            comp2 = c2.selectbox("Select Challenger Run (Right)", scen_list, index=1)
+            comp1 = c1.selectbox("Select Baseline Run (Left Column)", scen_list, index=0)
+            comp2 = c2.selectbox("Select Challenger Run (Right Column)", scen_list, index=1)
             
-            s1, s2 = st.session_state.scenarios[comp1], st.session_state.scenarios[comp2]
+            s1 = st.session_state.scenarios[comp1]
+            s2 = st.session_state.scenarios[comp2]
+            
             col_left, col_right = st.columns(2)
             with col_left:
-                st.markdown(f"### {comp1} Details")
-                st.metric("Consolidated Costs ($)", f"{s1['cost']:,}")
-                st.metric("Active Hub Count", f"{int(sum([s1['wh_open'][w] for w in whs]))} WH")
+                st.markdown(f"### 📈 {comp1} Executive Dashboard")
+                st.metric("Consolidated Landed Budget ($)", f"{s1['cost']:,}")
+                st.metric("Active Network Hub Count", f"{int(sum([s1['wh_open'][w] for w in whs]))} Active WH")
+                
+                st.markdown(f"### 🗺️ {comp1} Regional Node Map")
+                m1 = folium.Map(location=[39.8283, -98.5795], zoom_start=4)
+                for w in whs:
+                    if s1['wh_open'][w] > 0.5: folium.Marker([whs[w]['Latitude'], whs[w]['Longitude']], icon=folium.Icon(color="red", icon="warehouse", prefix="fa")).add_to(m1)
+                for (w, c), val in s1['flow_wc'].items():
+                    folium.PolyLine([[whs[w]['Latitude'], whs[w]['Longitude']], [custs[c]['Latitude'], custs[c]['Longitude']]], color="red", weight=2).add_to(m1)
+                st_folium(m1, width="100%", height=400, key="map_scen_left", returned_objects=[])
+                
             with col_right:
-                st.markdown(f"### {comp2} Details")
-                st.markdown(f"### {comp2} Details")
-                st.metric("Consolidated Costs ($)", f"{s2['cost']:,}", delta=int(s2['cost'] - s1['cost']), delta_color="inverse")
-                st.metric("Active Hub Count", f"{int(sum([s2['wh_open'][w] for w in whs]))} WH")
+                st.markdown(f"### 📈 {comp2} Executive Dashboard")
+                st.metric("Consolidated Landed Budget ($)", f"{s2['cost']:,}", delta=int(s2['cost'] - s1['cost']), delta_color="inverse")
+                st.metric("Active Network Hub Count", f"{int(sum([s2['wh_open'][w] for w in whs]))} Active WH")
+                
+                st.markdown(f"### 🗺️ {comp2} Regional Node Map")
+                m2 = folium.Map(location=[39.8283, -98.5795], zoom_start=4)
+                for w in whs:
+                    if s2['wh_open'][w] > 0.5: folium.Marker([whs[w]['Latitude'], whs[w]['Longitude']], icon=folium.Icon(color="green", icon="warehouse", prefix="fa")).add_to(m2)
+                for (w, c), val in s2['flow_wc'].items():
+                    folium.PolyLine([[whs[w]['Latitude'], whs[w]['Longitude']], [custs[c]['Latitude'], custs[c]['Longitude']]], color="green", weight=2).add_to(m2)
+                st_folium(m2, width="100%", height=400, key="map_scen_right", returned_objects=[])
+
     except Exception as e:
         st.error(f"Error compiling layout system: {str(e)}")
 else:
