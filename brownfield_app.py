@@ -8,7 +8,7 @@ from streamlit_folium import st_folium
 
 def haversine_distance(lat1, lon1, lat2, lon2):
     if lat1 == 0 or lon1 == 0 or lat2 == 0 or lon2 == 0: return 99999
-    R = 6371.0
+    R = 6371.0  # km
     lat1, lon1, lat2, lon2 = map(np.radians, [lat1, lon1, lat2, lon2])
     dlat = lat2 - lat1
     dlon = lon2 - lon1
@@ -23,18 +23,13 @@ def get_degressive_rate(dist, cost_1, cost_1000):
     return cost_1 - (slope * dist)
 
 st.set_page_config(layout="wide")
-st.title("🏭 Network Design Dashboard & Optimizer")
-st.markdown("Download our master infrastructure data template, update rows with your company profile parameters, and run enterprise-grade multi-echelon network optimizations.")
+st.title("🏭 Supply Chain Network Design Framework")
+st.markdown("Download our baseline master structure template, ingest custom enterprise operational profiles, and deploy mixed-integer optimizations natively.")
 
-# --- STEP 1: INITIALIZE MEMORY LOG FOR SCENARIOS ---
-if "scenarios" not in st.session_state:
-    st.session_state.scenarios = {}
-if "optimized" not in st.session_state:
-    st.session_state.optimized = False
-if "prob_results" not in st.session_state:
-    st.session_state.prob_results = None
+if "scenarios" not in st.session_state: st.session_state.scenarios = {}
+if "optimized" not in st.session_state: st.session_state.optimized = False
+if "prob_results" not in st.session_state: st.session_state.prob_results = None
 
-# --- STEP 2: DOWNLOAD BLANK SEED TEMPLATE ---
 st.subheader("📋 1. Get the Optimization Ingest Template File")
 dummy_buffer = io.BytesIO()
 with pd.ExcelWriter(dummy_buffer, engine='openpyxl') as writer:
@@ -42,17 +37,10 @@ with pd.ExcelWriter(dummy_buffer, engine='openpyxl') as writer:
     pd.DataFrame([{"Name": "Tampa", "Latitude": 38.5472, "Longitude": -97.1530, "Fixed": 0, "Minimum Weight": 0, "Maximum Weight": 24000000, "Minimum Volume": 0, "Maximum Volume": 68000, "Fixed Costs": 150000, "Costs per Weight Unit": 0.003, "Costs per Volume Unit": 0.6, "Truck Capacity Weight": 24000, "Truck Capacity Volume": 67, "Truck Costs per km/mi [first km/mi]": 1.4, "Truck Costs per km/mi [1000 km/mi]": 1.05, "Minimum LTL Costs": 0, "Costs 1/2 Truck [%]": 70}]).to_excel(writer, sheet_name="Warehouses", index=False)
     pd.DataFrame([{"Name": "New York", "Latitude": 43.1561, "Longitude": -75.8449, "Weight": 20831, "Volume": 58, "Number of Shipments": 253, "Factory": "Cleveland Factory", "Warehouse": "", "Maximum Warehouse Distance": 2500}]).to_excel(writer, sheet_name="Customers", index=False)
 
-st.download_button(
-    label="📥 Download Sample Excel Template Workbook with Dummy Data",
-    data=dummy_buffer.getvalue(),
-    file_name="Supply_Chain_Template.xlsx",
-    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-)
-
+st.download_button(label="📥 Download Sample Excel Template Workbook with Dummy Data", data=dummy_buffer.getvalue(), file_name="Supply_Chain_Template.xlsx")
 st.markdown("---")
 st.subheader("📤 2. Upload and Define Parameters")
 
-# Sidebar Configuration Control Panel Layout Options
 st.sidebar.header("🔧 Settings Menu")
 run_mode = st.sidebar.selectbox("Workflow Operational Mode", ["Run Network Optimization", "Run Current As-Is Baseline"])
 max_wh = st.sidebar.slider("Maximum Allowed Open Warehouses", min_value=1, max_value=20, value=7)
@@ -91,7 +79,7 @@ if uploaded_file is not None:
         for df in [factories_df, warehouses_df, customers_df]:
             df.columns = [str(c).strip() for c in df.columns]
             if 'Name' in df.columns: df['Name'] = df['Name'].astype(str).str.strip()
-            for col in ['Latitude', 'Longitude', 'Weight', 'Volume', 'Fixed Costs', 'Maximum Weight', 'Number of Shipments']:
+            for col in ['Latitude', 'Longitude', 'Weight', 'Volume', 'Fixed Costs', 'Maximum Weight', 'Number of Shipments', 'Costs per Weight Unit']:
                 if col in df.columns: df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0)
 
         factories_df = factories_df[factories_df['Latitude'] != 0].copy()
@@ -105,9 +93,8 @@ if uploaded_file is not None:
         unit_scale = 1.0 if dist_unit == "Kilometers" else 0.621371
         dist_fw = {f: {w: haversine_distance(facts[f]['Latitude'], facts[f]['Longitude'], whs[w]['Latitude'], whs[w]['Longitude']) * unit_scale for w in whs} for f in facts}
         dist_wc = {w: {c: haversine_distance(whs[w]['Latitude'], whs[w]['Longitude'], custs[c]['Latitude'], custs[c]['Longitude']) * unit_scale for c in custs} for w in whs}
-
         if st.button("🚀 Click to Execute Network Optimization Run"):
-            with st.spinner("Executing capacity linear program modeling matrices..."):
+            with st.spinner("Executing capacity constraints linear program modeling..."):
                 prob = LpProblem("Brownfield_Optimization", LpMinimize)
                 use_w = LpVariable.dicts("Open_WH", whs.keys(), cat="Binary")
                 flow_fw = LpVariable.dicts("Flow_Fact_WH", [(f, w) for f in facts for w in whs], lowBound=0, cat="Continuous")
@@ -146,47 +133,79 @@ if uploaded_file is not None:
                 
                 if LpStatus[prob.status] == "Optimal":
                     st.session_state.optimized = True
-                    # Extract raw floats from LP variables to safely store in dictionary logs
                     wh_open_res = {w: use_w[w].varValue for w in whs}
+                    flow_fw_res = {(f, w): flow_fw[f, w].varValue for f in facts for w in whs if flow_fw[f, w].varValue > 1.0}
                     flow_wc_res = {(w, c): flow_wc[w, c].varValue for w in whs for c in custs if flow_wc[w, c].varValue > 1.0}
-                    st.session_state.prob_results = (int(prob.objective.value()), wh_open_res, flow_wc_res)
+                    
+                    inbound_tot = sum([flow_fw_res.get((f, w), 0) * get_degressive_rate(dist_fw[f][w], facts[f].get('Truck Costs per km/mi [first km/mi]', 1), facts[f].get('Truck Costs per km/mi [1000 km/mi]', 1)) for f in facts for w in whs])
+                    outbound_tot = sum([flow_wc_res.get((w, c), 0) * get_degressive_rate(dist_wc[w][c], whs[w].get('Truck Costs per km/mi [first km/mi]', 1), whs[w].get('Truck Costs per km/mi [1000 km/mi]', 1)) for w in whs for c in custs])
+                    fixed_tot = sum([wh_open_res[w] * whs[w]['Fixed Costs'] for w in whs])
+                    var_tot = sum([flow_wc_res.get((w, c), 0) * whs[w]['Costs per Weight Unit'] for w in whs for c in custs])
+                    
+                    st.session_state.prob_results = (int(prob.objective.value()), wh_open_res, flow_fw_res, flow_wc_res, inbound_tot, outbound_tot, fixed_tot, var_tot)
                 else:
-                    st.error("No optimal layout feasible under current model parameters.")
-        # --- STEP 4: SCENARIO STORAGE LOGIC BUTTONS ---
+                    st.error("No optimal solution path found under current parameter ceilings.")
         if st.session_state.optimized:
+            cost, wh_open, flow_fw_res, flow_wc_res, inbound_tot, outbound_tot, fixed_tot, var_tot = st.session_state.prob_results
             st.markdown("---")
             st.subheader("💾 Save This Configuration Run")
-            scen_name = st.text_input("Type an identifiable label for this calculation (e.g., '7 Warehouse Run')", f"Scenario {len(st.session_state.scenarios)+1}")
-            
+            scen_name = st.text_input("Type an identifiable label for this calculation", f"Scenario {len(st.session_state.scenarios)+1}")
             if st.button("Save to Comparison Room"):
-                cost, wh_open, flow_wc_data = st.session_state.prob_results
-                st.session_state.scenarios[scen_name] = {
-                    "cost": cost, "wh_open": wh_open, "flow_wc": flow_wc_data,
-                    "max_wh": max_wh, "run_mode": run_mode, "unit": dist_unit
-                }
-                st.success(f"Successfully pinned '{scen_name}' to system memory!")
+                st.session_state.scenarios[scen_name] = {"cost": cost, "wh_open": wh_open, "flow_wc": flow_wc_res, "max_wh": max_wh, "unit": dist_unit}
+                st.success(f"Pinned '{scen_name}' to system memory!")
 
-            # --- STEP 5: RENDER THREE SEPARATE INTERACTIVE RESULTS TABS ---
             st.subheader("📊 3. Exploration Results Panel")
             tab_doc, tab_dash, tab_map = st.tabs(["📥 1. Download Excel Workbook", "📈 2. View Performance Dashboard", "🗺️ 3. View Interactive Network Map"])
-            cost, wh_open, flow_wc_data = st.session_state.prob_results
             
             with tab_doc:
                 st.markdown("### Output Generation Export Link")
-                open_wh_report = [{"Warehouse Name": w, "Assigned Weight": sum([flow_wc_data.get((w, c), 0) for c in custs])} for w in whs if wh_open[w] > 0.5]
+                open_wh_rows = []
+                for w in whs:
+                    if wh_open[w] > 0.5:
+                        w_wt = sum([flow_wc_res.get((w, c), 0) for c in custs])
+                        w_vol = sum([flow_wc_res.get((w, c), 0) * (custs[c]['Volume'] / (custs[c]['Weight'] if custs[c]['Weight'] > 0 else 1)) for c in custs])
+                        w_sh = sum([custs[c]['Number of Shipments'] for c in custs if flow_wc_res.get((w, c), 0) > 1.0])
+                        open_wh_rows.append({"Name": w, "Assigned Weight": int(w_wt), "Assigned Volume": int(w_vol), "Assigned Shipments": int(w_sh), "Fixed Costs": int(whs[w]['Fixed Costs']), "Variable Costs": int(w_wt * whs[w]['Costs per Weight Unit'])})
+                df_tab_wh = pd.DataFrame(open_wh_rows)
+                
+                f_w_rows = []
+                for (f, w), val in flow_fw_res.items():
+                    f_w_rows.append({"Factory Name": f, "Warehouse Name": w, "Weight": int(val), "Distance": round(dist_fw[f][w], 2), "Transport Costs": int(val * get_degressive_rate(dist_fw[f][w], facts[f].get('Truck Costs per km/mi [first km/mi]', 1), facts[f].get('Truck Costs per km/mi [1000 km/mi]', 1)))})
+                df_tab_fw = pd.DataFrame(f_w_rows)
+
+                w_c_rows = []
+                for (w, c), val in flow_wc_res.items():
+                    w_c_rows.append({"Name": c, "Weight": int(custs[c]['Weight']), "Volume": int(custs[c]['Volume']), "Number of Shipments": int(custs[c]['Number of Shipments']), "Warehouse Name": w, "Distance": round(dist_wc[w][c], 2), "Transport Costs": int(val * get_degressive_rate(dist_wc[w][c], whs[w].get('Truck Costs per km/mi [first km/mi]', 1), whs[w].get('Truck Costs per km/mi [1000 km/mi]', 1))), "Factory Name": custs[c]['Factory']})
+                df_tab_wc = pd.DataFrame(w_c_rows)
+                
+                kpi_rows = [{"KPI Name": "Value Target Function", "Value": cost}, {"KPI Name": "Optimization Status", "Value": "optimal solution"}, {"KPI Name": "Total Transport Costs", "Value": int(inbound_tot + outbound_tot)}, {"KPI Name": "Fixed Warehouse Costs", "Value": int(fixed_tot)}, {"KPI Name": "Variable Warehouse Costs", "Value": int(var_tot)}]
+                df_tab_kpi = pd.DataFrame(kpi_rows)
+
                 out_buffer = io.BytesIO()
                 with pd.ExcelWriter(out_buffer, engine='openpyxl') as writer:
-                    pd.DataFrame(open_wh_report).to_excel(writer, sheet_name="Open Warehouses", index=False)
-                st.download_button(label="📥 Download Consolidated Optimized Solutions File", data=out_buffer.getvalue(), file_name="Optimized_Network_Output.xlsx")
+                    df_tab_wh.to_excel(writer, sheet_name="Open Warehouses", index=False)
+                    df_tab_fw.to_excel(writer, sheet_name="Factory-Warehouse Assignment", index=False)
+                    df_tab_wc.to_excel(writer, sheet_name="Customer-Warehouse Assignment", index=False)
+                    df_tab_kpi.to_excel(writer, sheet_name="KPIs", index=False)
+                st.download_button(label="📥 Download Consolidated Optimized Solutions Workbook (Sheet 2 Format)", data=out_buffer.getvalue(), file_name="Optimized_Network_Output.xlsx")
 
             with tab_dash:
                 st.markdown("### Executive Landed Cost Performance Dashboard")
-                k1, k2, k3 = st.columns(3)
-                k1.metric("Landed Solution Path", "Optimal Structure")
-                k2.metric("Total Operational Budget ($)", f"{cost:,}")
-                k3.metric("Selected Network Facilities", f"{int(sum([wh_open[w] for w in whs]))} Active Hubs")
+                k1, k2, k3, k4 = st.columns(4)
+                k1.metric("TOTAL TARGET COSTS ($)", f"{cost:,}")
+                k2.metric("TOTAL TRANSPORTATION ($)", f"{int(inbound_tot + outbound_tot):,}")
+                k3.metric("FIXED WAREHOUSE LEASES ($)", f"{int(fixed_tot):,}")
+                k4.metric("VARIABLE HANDLING OVERHEAD ($)", f"{int(var_tot):,}")
                 
-                perf_report = [{"Active Warehouse Location": w, "Total Customers Served": sum([1 for c in custs if flow_wc_data.get((w, c), 0) > 1.0])} for w in whs if wh_open[w] > 0.5]
+                st.markdown("#### Warehouse Performance & Allocation Cost Breakdown")
+                perf_report = []
+                for w in whs:
+                    if wh_open[w] > 0.5:
+                        cust_count = sum([1 for c in custs if flow_wc_res.get((w, c), 0) > 1.0])
+                        w_wt = sum([flow_wc_res.get((w, c), 0) for c in custs])
+                        f_cost = int(whs[w]['Fixed Costs'])
+                        v_cost = int(w_wt * whs[w]['Costs per Weight Unit'])
+                        perf_report.append({"Active Warehouse": w, "Customers Served": cust_count, "Fixed Operating Costs ($)": f_cost, "Variable Handling Costs ($)": v_cost, "Total Consolidated Warehouse Cost ($)": f_cost + v_cost})
                 st.dataframe(pd.DataFrame(perf_report), use_container_width=True, hide_index=True)
 
             with tab_map:
@@ -194,52 +213,47 @@ if uploaded_file is not None:
                 v_lats = [whs[w]['Latitude'] for w in whs if wh_open[w] > 0.5] + [custs[c]['Latitude'] for c in custs]
                 v_lons = [whs[w]['Longitude'] for w in whs if wh_open[w] > 0.5] + [custs[c]['Longitude'] for c in custs]
                 map_obj = folium.Map(location=[np.mean(v_lats), np.mean(v_lons)], zoom_start=4)
+                folium.TileLayer(tiles="https://{s}://{z}/{x}/{y}{r}.png", attr="&copy; CARTO", name="English labels", overlay=True, control=False).add_to(map_obj)
                 
-                for (w, c), f_val in flow_wc_data.items():
-                    if f_val > 1.0:
-                        folium.PolyLine(locations=[[whs[w]['Latitude'], whs[w]['Longitude']], [custs[c]['Latitude'], custs[c]['Longitude']]], color="blue", weight=line_thickness, opacity=0.4).add_to(map_obj)
+                fg_factories = folium.FeatureGroup(name="Factories (Red Pins)", show=True).add_to(map_obj)
+                fg_warehouses = folium.FeatureGroup(name="Open Warehouses (Orange)", show=True).add_to(map_obj)
+                fg_customers = folium.FeatureGroup(name="Customers (Blue)", show=True).add_to(map_obj)
+                fg_inbound_lanes = folium.FeatureGroup(name="Inbound Lines (Red)", show=True).add_to(map_obj)
+                fg_outbound_lanes = folium.FeatureGroup(name="Outbound Lines (Blue)", show=True).add_to(map_obj)
+                
+                for (f, w), val in flow_fw_res.items():
+                    folium.PolyLine([[facts[f]['Latitude'], facts[f]['Longitude']], [whs[w]['Latitude'], whs[w]['Longitude']]], color="red", weight=line_thickness + 1, opacity=0.7).add_to(fg_inbound_lanes)
+                for (w, c), val in flow_wc_res.items():
+                    folium.PolyLine([[whs[w]['Latitude'], whs[w]['Longitude']], [custs[c]['Latitude'], custs[c]['Longitude']]], color="blue", weight=line_thickness, opacity=0.4).add_to(fg_outbound_lanes)
+                    folium.CircleMarker([custs[c]['Latitude'], custs[c]['Longitude']], radius=4, color="blue", fill=True, popup=c).add_to(fg_customers)
+                for f in facts:
+                    folium.Marker([facts[f]['Latitude'], facts[f]['Longitude']], icon=folium.Icon(color="red", icon="industry", prefix="fa"), popup=f).add_to(fg_factories)
                 for w in whs:
-                    if wh_open[w] > 0.5: folium.Marker(location=[whs[w]['Latitude'], whs[w]['Longitude']], icon=folium.Icon(color="orange", icon="warehouse", prefix="fa"), popup=w).add_to(map_obj)
-                st_folium(map_obj, width="100%", height=500, returned_objects=[], key="main_map")
+                    if wh_open[w] > 0.5: folium.Marker([whs[w]['Latitude'], whs[w]['Longitude']], icon=folium.Icon(color="orange", icon="warehouse", prefix="fa"), popup=w).add_to(fg_warehouses)
+                    
+                folium.LayerControl(position='topleft', collapsed=True).add_to(map_obj)
+                st_folium(map_obj, width="100%", height=600, returned_objects=[], key="main_map")
 
-        # --- STEP 6: SIDE-BY-SIDE SIDE PANEL COMPARISON SCREEN ---
         if len(st.session_state.scenarios) >= 2:
             st.markdown("---")
-            st.subheader("⚖️ 4. Side-by-Side Scenario Comparison Room")
-            st.markdown("Select any two saved calculation profiles to review changes side-by-side.")
-            
+            st.subheader("⚖_ 4. Side-by-Side Scenario Comparison Room")
             scen_list = list(st.session_state.scenarios.keys())
-            comp1 = st.selectbox("Select Baseline Scenario (Left Column)", scen_list, index=0)
-            comp2 = st.selectbox("Select Challenger Scenario (Right Column)", scen_list, index=1)
+            c1, c2 = st.columns(2)
+            comp1 = c1.selectbox("Select Baseline Run (Left)", scen_list, index=0)
+            comp2 = c2.selectbox("Select Challenger Run (Right)", scen_list, index=1)
             
-            s1 = st.session_state.scenarios[comp1]
-            s2 = st.session_state.scenarios[comp2]
-            
+            s1, s2 = st.session_state.scenarios[comp1], st.session_state.scenarios[comp2]
             col_left, col_right = st.columns(2)
-            
             with col_left:
-                st.markdown(f"### 📈 {comp1} Dashboard")
-                st.metric("Total Landed Costs ($)", f"{s1['cost']:,}")
-                st.metric("Open Network Hubs", f"{int(sum([s1['wh_open'][w] for w in whs]))} Facilities")
-                
-                st.markdown(f"### 🗺️ {comp1} Spatial Map")
-                m1 = folium.Map(location=[39.8, -98.5], zoom_start=4)
-                for w in whs:
-                    if s1['wh_open'][w] > 0.5: folium.Marker([whs[w]['Latitude'], whs[w]['Longitude']], icon=folium.Icon(color="red")).add_to(m1)
-                st_folium(m1, width="100%", height=400, key="map_left")
-                
+                st.markdown(f"### {comp1} Details")
+                st.metric("Consolidated Costs ($)", f"{s1['cost']:,}")
+                st.metric("Active Hub Count", f"{int(sum([s1['wh_open'][w] for w in whs]))} WH")
             with col_right:
-                st.markdown(f"### 📈 {comp2} Dashboard")
-                st.metric("Total Landed Costs ($)", f"{s2['cost']:,}", delta=int(s2['cost'] - s1['cost']), delta_color="inverse")
-                st.metric("Open Network Hubs", f"{int(sum([s2['wh_open'][w] for w in whs]))} Facilities")
-                
-                st.markdown(f"### 🗺️ {comp2} Spatial Map")
-                m2 = folium.Map(location=[39.8, -98.5], zoom_start=4)
-                for w in whs:
-                    if s2['wh_open'][w] > 0.5: folium.Marker([whs[w]['Latitude'], whs[w]['Longitude']], icon=folium.Icon(color="green")).add_to(m2)
-                st_folium(m2, width="100%", height=400, key="map_right")
-
+                st.markdown(f"### {comp2} Details")
+                st.markdown(f"### {comp2} Details")
+                st.metric("Consolidated Costs ($)", f"{s2['cost']:,}", delta=int(s2['cost'] - s1['cost']), delta_color="inverse")
+                st.metric("Active Hub Count", f"{int(sum([s2['wh_open'][w] for w in whs]))} WH")
     except Exception as e:
-        st.error(f"Error executing scenario comparison framework: {str(e)}")
+        st.error(f"Error compiling layout system: {str(e)}")
 else:
     st.info("Awaiting master spreadsheet workbook upload to reveal control panels.")
